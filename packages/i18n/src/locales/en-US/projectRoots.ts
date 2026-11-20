@@ -16,6 +16,8 @@ export const projectRoots = {
     bannerMultiTitle: "{count} folders need re-authorization",
     bannerReauthorize: "Re-authorize",
     bannerGranting: "Authorizing…",
+    bannerReselect: "Choose folder again",
+    pickDifferentFolder: "Please choose the folder named \"{name}\"",
     permissionTimedOut: "The browser did not answer the authorization request. Re-add the folder or reload the page.",
     bannerDismiss: "Dismiss",
     permissionDenied: "Permission denied",

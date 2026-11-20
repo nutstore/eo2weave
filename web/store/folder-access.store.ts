@@ -18,6 +18,7 @@ import { immer } from 'zustand/middleware/immer'
 import { toast } from 'sonner'
 import {
   describeHandle,
+  isSameEntryWithDeadline,
   PERMISSION_QUERY_DEADLINE_MS,
   PERMISSION_REQUEST_DEADLINE_MS,
   queryPermissionWithDeadline,
@@ -907,6 +908,72 @@ export const useFolderAccessStore = create<FolderAccessStore>()(
 
     roots: [],
 
+    repickRoot: async (rootName: string) => {
+      const projectId = get().activeProjectId
+      if (!projectId) return false
+
+      const capability = getRuntimeCapability()
+      if (!capability.canPickDirectory) {
+        toast.error(i18nText('projectRoots.directoryPickerUnavailable', 'Directory picker not available in this browser'))
+        return false
+      }
+
+      // A fresh pick is the only thing that works for a stalled handle: the
+      // stored one never answers queryPermission/requestPermission, so waiting
+      // on it again just burns the request window (issue #316 field report:
+      // deleting the root and adding it again restored access immediately).
+      let handle: FileSystemDirectoryHandle | null = null
+      try {
+        handle = await selectFolderReadWrite()
+      } catch (error) {
+        console.warn('[FolderAccessStore] repickRoot: directory picker failed:', error)
+        toast.error(i18nText('projectRoots.permissionFailed', 'Failed to restore permission'))
+        return false
+      }
+      if (!handle) return false
+
+      if (handle.name !== rootName) {
+        toast.error(
+          i18nText('projectRoots.pickDifferentFolder', `Please choose the folder named "${rootName}"`, {
+            name: rootName,
+          })
+        )
+        return false
+      }
+
+      bindRuntimeDirectoryHandle(projectId, rootName, handle)
+
+      try {
+        await folderAccessRepo.save({
+          projectId,
+          rootName,
+          handle,
+          persistedHandle: handle,
+          folderName: rootName,
+          status: 'ready',
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        })
+      } catch (error) {
+        console.error('[FolderAccessStore] repickRoot: persist failed:', error)
+        toast.error(i18nText('projectRoots.permissionFailed', 'Failed to restore permission'))
+        return false
+      }
+
+      permissionProbeTimeouts.delete(probeKey(projectId, rootName))
+
+      await get().loadRoots()
+
+      try {
+        const { useAgentStore } = await import('./agent.store')
+        useAgentStore.setState({ directoryHandle: handle, directoryName: rootName })
+      } catch { /* ignore */ }
+
+      get().clearFilePaths()
+      toast.success(i18nText('projectRoots.permissionRestored', 'Folder permission restored'))
+      return true
+    },
+
     loadRoots: async () => {
       const projectId = get().activeProjectId
       // Mark hydration complete even when there's no active project (so the
@@ -957,6 +1024,9 @@ export const useFolderAccessStore = create<FolderAccessStore>()(
             let persistedHandle: FileSystemDirectoryHandle | null = null
             let status: FolderAccessStatus = 'idle'
             let error: string | undefined
+            // Set when the stored handle never answered: asking it again is a
+            // waste of the 30s request window, only a fresh pick recovers it.
+            let stalled = false
 
             if (handle) {
               status = 'ready'
@@ -975,9 +1045,11 @@ export const useFolderAccessStore = create<FolderAccessStore>()(
                       `[FolderAccessStore] Skipping the permission probe for root "${dbRoot.name}": it did not answer during this activation`
                     )
                     status = 'needs_user_activation'
+                    stalled = true
                   } else {
                     const permission = await queryPermissionWithDeadline(persistedHandle)
                     if (permission === 'timeout') {
+                      stalled = true
                       permissionProbeTimeouts.add(key)
                       console.warn(
                         `[FolderAccessStore] Permission query did not answer within ${PERMISSION_QUERY_DEADLINE_MS}ms for root "${dbRoot.name}"; marking it for re-authorization`
@@ -1016,6 +1088,7 @@ export const useFolderAccessStore = create<FolderAccessStore>()(
               persistedHandle,
               status,
               error,
+              stalled,
             }
           })
         )
@@ -1188,14 +1261,29 @@ export const useFolderAccessStore = create<FolderAccessStore>()(
           ?? getRuntimeHandlesForProject(projectId).get(rootName)
           ?? (await folderAccessRepo.findByProjectAndRoot(projectId, rootName))?.persistedHandle
         let sameDirectory = false
+        let identityUnknown = false
         if (previousHandle && (existingRoot.backend ?? 'fsaccess') === 'fsaccess') {
           try {
-            sameDirectory = await previousHandle.isSameEntry(handle)
+            const same = await isSameEntryWithDeadline(previousHandle, handle)
+            identityUnknown = same === 'timeout'
+            sameDirectory = same === true
           } catch { /* Cannot establish directory identity; do not replace it. */ }
         }
         if (!sameDirectory) {
-          toast.error(i18nText('projectRoots.rootAlreadyExists', `A folder named "${rootName}" already exists`, { name: rootName }))
-          return false
+          // A previous handle that cannot answer at all (the field case: the
+          // directory is fine, the persisted grant is unrecoverable) can never
+          // confirm identity. Refusing here would leave the root permanently
+          // dead, which is exactly what the user worked around by deleting the
+          // root and adding it again. Accept the explicitly picked replacement,
+          // loudly.
+          if (identityUnknown) {
+            console.warn(
+              `[FolderAccessStore] adoptPickedRoot: previous handle for "${rootName}" never answered isSameEntry; accepting the re-picked directory`
+            )
+          } else {
+            toast.error(i18nText('projectRoots.rootAlreadyExists', `A folder named "${rootName}" already exists`, { name: rootName }))
+            return false
+          }
         }
       }
 

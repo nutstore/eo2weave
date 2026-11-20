@@ -74,6 +74,15 @@ export function requestPermissionWithDeadline(
   return withDeadline(() => handle.requestPermission({ mode: 'readwrite' }), timeoutMs)
 }
 
+/** `isSameEntry` with a deadline; used when the "other" handle may be dead. */
+export function isSameEntryWithDeadline(
+  handle: FileSystemDirectoryHandle,
+  other: FileSystemDirectoryHandle,
+  timeoutMs: number = PERMISSION_QUERY_DEADLINE_MS
+): Promise<DeadlineResult<boolean>> {
+  return withDeadline(() => handle.isSameEntry(other), timeoutMs)
+}
+
 /**
  * What can be learned about a handle whose permission call never answered.
  *

@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   sidePanel: false,
   requestPermission: vi.fn(),
   loadRoots: vi.fn(),
+  repickRoot: vi.fn(),
 }))
 
 vi.mock('@/agent/workspace-assistant-context', () => ({ isSidePanelMode: () => mocks.sidePanel }))
@@ -54,6 +55,7 @@ vi.mock('@/store/folder-access.store', () => {
     rootsHydrated: true,
     activeProjectId: 'project-1',
     loadRoots: mocks.loadRoots,
+    repickRoot: mocks.repickRoot,
   }
   const useFolderAccessStore = (selector?: (s: Record<string, unknown>) => unknown) =>
     selector ? selector(state) : state
@@ -80,6 +82,7 @@ function setRoots(roots: unknown[], hydrated = true) {
     rootsHydrated: hydrated,
     activeProjectId: 'project-1',
     loadRoots: mocks.loadRoots,
+    repickRoot: mocks.repickRoot,
   })
 }
 
@@ -91,6 +94,7 @@ describe('FolderPermissionBanner (issue #83)', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mocks.loadRoots.mockResolvedValue(undefined)
+    mocks.repickRoot.mockResolvedValue(true)
     setRoots([expiredRoot])
     window.sessionStorage.clear()
   })
@@ -105,6 +109,22 @@ describe('FolderPermissionBanner (issue #83)', () => {
     // Interpolation assertion: the {name} placeholder must be substituted.
     expect(screen.getByText('Reauthorize photos')).toBeTruthy()
     expect(screen.getByRole('button', { name: 'projectRoots.bannerReauthorize' })).toBeTruthy()
+  })
+
+  it('asks for a fresh pick when the stored handle never answered', async () => {
+    // Field case (#316): the directory is fine and was never moved, but the
+    // persisted handle stopped answering permission calls. Asking it again
+    // cannot work, so the banner must drive a re-pick instead.
+    setRoots([{ ...expiredRoot, stalled: true }])
+    render(<FolderPermissionBanner />)
+
+    const button = screen.getByRole('button', { name: 'projectRoots.bannerReselect' })
+    await act(async () => {
+      await userEvent.click(button)
+    })
+
+    expect(mocks.repickRoot).toHaveBeenCalledWith('photos')
+    expect(mocks.requestPermission).not.toHaveBeenCalled()
   })
 
   it('shows nothing when all roots are ready', () => {

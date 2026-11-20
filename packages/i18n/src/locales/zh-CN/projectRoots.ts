@@ -16,6 +16,8 @@ export const projectRoots = {
     bannerMultiTitle: "{count} 个文件夹的访问授权已失效",
     bannerReauthorize: "重新授权",
     bannerGranting: "授权中…",
+    bannerReselect: "重新选择文件夹",
+    pickDifferentFolder: "请选择名为“{name}”的文件夹",
     permissionTimedOut: "浏览器没有响应授权请求。请重新添加文件夹，或刷新页面后重试。",
     bannerDismiss: "关闭",
     permissionDenied: "权限被拒绝",
