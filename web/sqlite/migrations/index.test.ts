@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { BASE_SCHEMA_VERSION, initializeSchema } from './index'
+import { BASE_SCHEMA_VERSION, LATEST_SCHEMA_VERSION, initializeSchema } from './index'
 
 class SchemaDatabase {
   statements: string[] = []
@@ -92,7 +92,7 @@ describe('initializeSchema', () => {
 
     await initializeSchema(db)
 
-    expect(db.userVersion).toBe(BASE_SCHEMA_VERSION)
+    expect(db.userVersion).toBe(LATEST_SCHEMA_VERSION)
     expect(db.statements.some((sql) => sql.includes('ALTER TABLE subagent_tasks'))).toBe(false)
   })
 
@@ -101,7 +101,7 @@ describe('initializeSchema', () => {
 
     await initializeSchema(db)
 
-    expect(db.userVersion).toBe(BASE_SCHEMA_VERSION)
+    expect(db.userVersion).toBe(LATEST_SCHEMA_VERSION)
     expect(db.statements).toContainEqual(
       expect.stringContaining('ADD COLUMN subagent_type')
     )
@@ -115,7 +115,7 @@ describe('initializeSchema', () => {
 
     await initializeSchema(db)
 
-    expect(db.userVersion).toBe(BASE_SCHEMA_VERSION)
+    expect(db.userVersion).toBe(LATEST_SCHEMA_VERSION)
     expect(db.statements).toContainEqual(
       expect.stringContaining('CREATE TABLE IF NOT EXISTS flow_templates')
     )
@@ -135,7 +135,7 @@ describe('initializeSchema', () => {
 
     await initializeSchema(db)
 
-    expect(db.userVersion).toBe(BASE_SCHEMA_VERSION)
+    expect(db.userVersion).toBe(LATEST_SCHEMA_VERSION)
     expect(db.statements).toContainEqual(
       expect.stringContaining('ADD COLUMN compressed_context_summary')
     )
@@ -155,7 +155,7 @@ describe('initializeSchema', () => {
 
     await initializeSchema(db)
 
-    expect(db.userVersion).toBe(BASE_SCHEMA_VERSION)
+    expect(db.userVersion).toBe(LATEST_SCHEMA_VERSION)
     expect(db.statements).toContainEqual(
       expect.stringContaining("ADD COLUMN backend TEXT NOT NULL DEFAULT 'fsaccess'")
     )
@@ -169,7 +169,7 @@ describe('initializeSchema', () => {
 
     await initializeSchema(db)
 
-    expect(db.userVersion).toBe(BASE_SCHEMA_VERSION)
+    expect(db.userVersion).toBe(LATEST_SCHEMA_VERSION)
     expect(db.statements).toContainEqual(
       expect.stringContaining("ALTER TABLE project_roots ADD COLUMN backend TEXT NOT NULL DEFAULT 'fsaccess'")
     )
@@ -183,7 +183,7 @@ describe('initializeSchema', () => {
 
     await initializeSchema(db)
 
-    expect(db.userVersion).toBe(BASE_SCHEMA_VERSION)
+    expect(db.userVersion).toBe(LATEST_SCHEMA_VERSION)
     expect(db.statements).toContainEqual(
       expect.stringContaining("ALTER TABLE project_roots ADD COLUMN backend TEXT NOT NULL DEFAULT 'fsaccess'")
     )
@@ -198,7 +198,7 @@ describe('initializeSchema', () => {
 
     await initializeSchema(db)
 
-    expect(db.userVersion).toBe(BASE_SCHEMA_VERSION)
+    expect(db.userVersion).toBe(LATEST_SCHEMA_VERSION)
     expect(db.statements).toContainEqual(
       expect.stringContaining('ALTER TABLE fs_ops ADD COLUMN delete_mode')
     )
@@ -214,7 +214,7 @@ describe('initializeSchema', () => {
 
     // v19 (kind) and v20/v21 (subagent timeout, managed MCP tasks) also run —
     // the final version is the current base.
-    expect(db.userVersion).toBe(BASE_SCHEMA_VERSION)
+    expect(db.userVersion).toBe(LATEST_SCHEMA_VERSION)
     expect(db.statements).toContainEqual(
       expect.stringContaining('ALTER TABLE fs_ops ADD COLUMN delete_mode')
     )
@@ -227,7 +227,7 @@ describe('initializeSchema', () => {
 
     await initializeSchema(db)
 
-    expect(db.userVersion).toBe(BASE_SCHEMA_VERSION)
+    expect(db.userVersion).toBe(LATEST_SCHEMA_VERSION)
     expect(db.statements).toContainEqual(
       expect.stringContaining("ALTER TABLE conversations ADD COLUMN kind TEXT NOT NULL DEFAULT 'project'")
     )
@@ -254,7 +254,7 @@ describe('initializeSchema', () => {
 
     await initializeSchema(db)
 
-    expect(db.userVersion).toBe(BASE_SCHEMA_VERSION)
+    expect(db.userVersion).toBe(LATEST_SCHEMA_VERSION)
     expect(db.statements).toContainEqual(
       expect.stringContaining('CREATE TABLE IF NOT EXISTS mcp_tasks')
     )
@@ -273,7 +273,7 @@ describe('initializeSchema', () => {
 
     await initializeSchema(db)
 
-    expect(db.userVersion).toBe(BASE_SCHEMA_VERSION)
+    expect(db.userVersion).toBe(LATEST_SCHEMA_VERSION)
     expect(db.statements).toContainEqual(
       expect.stringContaining('CREATE TABLE IF NOT EXISTS mcp_tasks')
     )
@@ -288,7 +288,7 @@ describe('initializeSchema', () => {
     await initializeSchema(db)
 
     // Repairs raise the floor but never regress the base schema version.
-    expect(db.userVersion).toBe(BASE_SCHEMA_VERSION)
+    expect(db.userVersion).toBe(LATEST_SCHEMA_VERSION)
     expect(db.statements.filter((sql) => sql === 'PRAGMA user_version = 17')).toHaveLength(0)
     expect(db.statements.filter((sql) => sql === 'PRAGMA user_version = 18')).toHaveLength(0)
   })
