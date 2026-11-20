@@ -52,7 +52,10 @@ export const syncToDiskDefinition: ToolDefinition = {
       'content. Requires user approval each time unless the user grants "always allow" for this ' +
       'conversation. PENDING DELETIONS ARE INCLUDED: the approval modal will explicitly list the ' +
       'files to be deleted (irreversible on disk, rollback-able via snapshots), and deletions use ' +
-      'a separate "always allow" grant from regular writes. Never overwrites conflicting disk files.',
+      'a separate "always allow" grant from regular writes. Never overwrites conflicting disk files. ' +
+      'When the conversation applies changes manually ("manual apply" policy), every call asks the ' +
+      'user — YOLO does not cover this tool in that mode; expect the changes to stay pending and ' +
+      'tell the user to apply them if they prefer.',
     parameters: {
       type: 'object',
       properties: {
@@ -238,6 +241,21 @@ export const syncToDiskExecutor: ToolExecutor = async (args, context) => {
   // DIFFERENT memory keys and descriptions: the modal for a deletion-bearing
   // flush explicitly lists the doomed paths, and "always allow" for writes
   // never covers deletions (and vice versa) — each grant is informed.
+  //
+  // "手动应用变更" (per-workspace auto-apply OFF) is a promise the user made to
+  // themselves: THEY apply pending changes. A mid-run flush must therefore
+  // stay interactive — no YOLO, no standing "always allow" grant, no
+  // trusted-source shortcut (policy-engine's manual-apply gate). Read the
+  // policy for THIS conversation here (workspaceId === conversation id) so a
+  // run in another workspace cannot alter this decision; if the preferences
+  // are unavailable, fall back to the strict reading (always ask).
+  let manualApply = true
+  try {
+    const { isManualApplyPolicy } = await import('@/store/workspace-preferences.store')
+    manualApply = isManualApplyPolicy(context.workspaceId)
+  } catch {
+    manualApply = true
+  }
   const includeDeletions = deletionPaths.length > 0
   // Structured list for the modal: every eligible change (create/modify AND
   // delete) mapped to FileChange shape so ToolAuthModal can render a
@@ -257,10 +275,17 @@ export const syncToDiskExecutor: ToolExecutor = async (args, context) => {
     fileChanges: eligibleFileChanges,
     conversationId: context.workspaceId,
     signal: context.abortSignal,
+    manualApply,
   })
   if (auth.decision === 'deny') {
     return toolErrorJson(TOOL_NAME, 'AUTH_DENIED_BY_USER', auth.reason, {
       retryable: false,
+      // Under the manual-apply policy the denial is not a hiccup: the user owns
+      // the apply step, so point the agent at the real next action instead of
+      // letting it retry the same flush.
+      hint: manualApply
+        ? 'This conversation applies changes manually: the pending changes stay in the review panel for the user to apply. Do not retry the flush; continue with work that does not depend on disk state, or tell the user which files are waiting to be applied.'
+        : undefined,
     })
   }
   // Stale-approval guard (executor layer).
@@ -342,6 +367,6 @@ export const syncToDiskPromptDoc: ToolPromptDoc = {
   category: 'file-ops',
   section: '### File Sync (OPFS → disk)',
   lines: [
-    '- `sync-to-disk(paths?, summary?)` - Write your pending changes to the real disk (requires user approval each time unless remembered). Use BEFORE running a shell command whose result depends on the latest file content. Includes pending DELETIONS: the approval modal lists the files to be deleted, and approving applies them (rollback-able via snapshots). Deletions carry their own "always allow" grant, separate from regular writes. Never overwrites conflicting disk files. ALWAYS pass `summary` with a short note about what the changes deliver (e.g. "fix homepage redirect") — it becomes the snapshot title users see in the snapshot list.',
+    '- `sync-to-disk(paths?, summary?)` - Write your pending changes to the real disk (requires user approval each time unless remembered). Use BEFORE running a shell command whose result depends on the latest file content. Includes pending DELETIONS: the approval modal lists the files to be deleted, and approving applies them (rollback-able via snapshots). Deletions carry their own "always allow" grant, separate from regular writes. Never overwrites conflicting disk files. ALWAYS pass `summary` with a short note about what the changes deliver (e.g. "fix homepage redirect") — it becomes the snapshot title users see in the snapshot list. When the user applies changes manually (the default), every call asks again even in YOLO mode — if the user declines, leave the changes pending.',
   ],
 }

@@ -22,6 +22,16 @@ vi.mock('@/opfs', () => ({
   }),
 }))
 
+/**
+ * Run-completion policy stub. Default OFF (auto-apply) so the shortcuts this
+ * file pins (yolo / "always allow") stay reachable; the manual-apply block
+ * flips it ON to prove the flush must then stay interactive.
+ */
+const manualApplyState = vi.hoisted(() => ({ manual: false }))
+vi.mock('@/store/workspace-preferences.store', () => ({
+  isManualApplyPolicy: () => manualApplyState.manual,
+}))
+
 const syncToDiskMock = vi.fn()
 const createSnapshotMock = vi.fn()
 const markSyncedMock = vi.fn()
@@ -46,6 +56,7 @@ const context = {
 describe('sync-to-disk tool', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    manualApplyState.manual = false
     useToolAuthStore.getState().clear()
     useSessionAllowStore.getState().clearAll()
     useYoloModeStore.getState().clearAll()
@@ -213,7 +224,7 @@ describe('sync-to-disk tool', () => {
     expect(createSnapshotMock).not.toHaveBeenCalled()
   })
 
-  it('yolo mode auto-allows the disk flush (generalized prompt skip)', async () => {
+  it('yolo mode auto-allows the disk flush when the workspace auto-applies', async () => {
     useYoloModeStore.getState().setYolo('conv-1', true)
     mockRuntime.getPendingChanges.mockReturnValue([
       { path: 'a.ts', type: 'modify' },
@@ -226,6 +237,51 @@ describe('sync-to-disk tool', () => {
     ) as { data?: { synced: string[] } }
     expect(parsed.data?.synced).toEqual(['a.ts'])
     expect(useToolAuthStore.getState().queue).toHaveLength(0)
+  })
+
+  describe('manual apply policy ("手动应用变更")', () => {
+    beforeEach(() => {
+      manualApplyState.manual = true
+      mockRuntime.getPendingChanges.mockReturnValue([
+        { path: 'a.ts', type: 'modify' },
+      ])
+      syncToDiskMock.mockResolvedValue({ success: 1, failed: 0, conflicts: [] })
+    })
+
+    it('yolo does NOT flush silently — the modal is still required', async () => {
+      useYoloModeStore.getState().setYolo('conv-1', true)
+
+      const pending = syncToDiskExecutor({ paths: ['a.ts'] }, context)
+      await new Promise((r) => setTimeout(r, 0))
+      expect(useToolAuthStore.getState().pending?.toolName).toBe('sync-to-disk')
+      expect(syncToDiskMock).not.toHaveBeenCalled()
+
+      useToolAuthStore.getState().approve()
+      const parsed = JSON.parse((await pending) as string) as { data?: { synced: string[] } }
+      expect(parsed.data?.synced).toEqual(['a.ts'])
+    })
+
+    it('a remembered approval can never store a grant under manual apply', async () => {
+      const pending = syncToDiskExecutor({ paths: ['a.ts'] }, context)
+      await new Promise((r) => setTimeout(r, 0))
+      // No "always allow" button (a stored grant would defeat the policy)…
+      expect(useToolAuthStore.getState().pending?.memoryKey).toBeNull()
+
+      useToolAuthStore.getState().approve(true)
+      await pending
+      // …and the verdict cannot sneak one into the session store either.
+      expect(useSessionAllowStore.getState().has('conv-1', 'sync-to-disk')).toBe(false)
+    })
+
+    it('a denial leaves the changes pending (no snapshot, no disk write)', async () => {
+      const pending = syncToDiskExecutor({ paths: ['a.ts'] }, context)
+      await new Promise((r) => setTimeout(r, 0))
+      useToolAuthStore.getState().deny()
+      const parsed = JSON.parse((await pending) as string) as { error?: { code?: string } }
+      expect(parsed.error?.code).toBe('AUTH_DENIED_BY_USER')
+      expect(syncToDiskMock).not.toHaveBeenCalled()
+      expect(createSnapshotMock).not.toHaveBeenCalled()
+    })
   })
 
   describe('snapshot summary (AI-provided title)', () => {

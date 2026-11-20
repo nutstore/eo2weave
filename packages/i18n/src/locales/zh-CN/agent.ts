@@ -22,7 +22,7 @@ export const agent = {
         actDescription: "可读取、写入和调用外部工具，但每个敏感操作都会先征求你的确认。",
         planShort: "只读分析",
         actShort: "允许写入，操作逐次确认",
-        yoloShort: "自动批准所有需确认的操作（外部调用、磁盘写入、命令执行等；仅本对话）",
+        yoloShort: "自动批准所有需确认的操作（外部调用、磁盘写入、命令执行等；仅本对话）。手动应用变更时，写入磁盘仍需确认。",
         planLabel: "只读分析模式",
         actLabel: "允许写入，逐次确认",
         switchTo: "切换到",
