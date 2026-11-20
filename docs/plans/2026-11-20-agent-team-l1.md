@@ -119,6 +119,7 @@
   - **实测（三探针）**：t1/t2 各自只引回自己那条、都答 `OTHER TASKS: none`；worker 试图写 manifest → `PERMISSION_DENIED`
   - **实测揭出的 bug（已修）**：`resolveActorAgentId` 在 `currentAgentId` 为空时回退到 `useAgentsStore.activeAgentId`（UI 状态）再回退 `'default'` → 匿名成员实际写 `by/default/`，**和 lead 同一目录**；而提示词里我自己编了个 `by/anonymous/` → 三个名字全对不上，子代理直接拒绝写。
   - **修法（D8）**：`teamMemberSlot({actorId, taskId})` 成为**唯一**答案：有 actor → `by/{actorId}/`，匿名 → `by/{taskId}/`，都没有 → 无写区（不编名）；ACL / 提示词 / handoff 三处均调它；`resolveActorAgentId` 对子代理**不再回退 UI 状态**；`handoff.writes` 落在槽位外 → spawn 当场 `INVALID_INPUT`（`fatal`），不让成员跑到一半才发现写不了。
+  - **run goal 的单一来源（补 A4 最后一环）**：goal 只在 `00-brief.md` 里，manifest 不存副本；spawn 时 `readTeamBrief()` 读一次（截断 800 字）拼进成员段落的 `Run goal (from 00-brief.md):`，位置在任务之上。以前 `manifest.goal` 恒为空 → 成员只看得到“我这条任务”，看不到“这次 run 在干什么”。
 - [ ] **P4-4** 按成员重跑：`runKey` + step 名定位（复用 replay，不依赖新 DB 列）
 - [ ] **P4-5** 显式 `step_id` 取代自增 index（`workflow_agent_steps` 属既有表，**不改结构**）
 - [x] **P4-6** task 状态机 + `_ledger.jsonl` 追加 → 终态回写已接：`done`（completed）/ `blocked`（failed / timeout / queue-empty / kill）四处调用点；`artifacts` **从目录列出来**（`listTeamSlotFiles`），不采信成员“我写了什么”的宣称；ledger 每事件一行 JSON（`spawned` / `done` / `blocked`），写失败不影响 manifest

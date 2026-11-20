@@ -9,6 +9,7 @@ import {
   assignTeamTask,
   buildTeamTaskSection,
   listTeamSlotFiles,
+  readTeamBrief,
   readTeamManifest,
   recordTeamTaskOutcome,
   teamManifestPath,
@@ -102,6 +103,25 @@ describe('team board reads', () => {
   it('treats a corrupt manifest as unreadable instead of throwing at the caller', async () => {
     resolveVfsTargetMock.mockResolvedValue(backendWith({ content: '{ broken' }))
     expect(await readTeamManifest(context())).toBeNull()
+  })
+
+  it('reads the run goal from 00-brief.md', async () => {
+    resolveVfsTargetMock.mockResolvedValue(backendWith({ content: 'Ship the board.\nTwo lines.' }))
+    expect(await readTeamBrief(context())).toBe('Ship the board.\nTwo lines.')
+  })
+
+  it('returns null for a missing or empty brief', async () => {
+    resolveVfsTargetMock.mockResolvedValue(backendWith({}))
+    expect(await readTeamBrief(context())).toBeNull()
+    resolveVfsTargetMock.mockResolvedValue(backendWith({ content: '   \n  ' }))
+    expect(await readTeamBrief(context())).toBeNull()
+  })
+
+  it('bounds a runaway brief so it cannot crowd out the task', async () => {
+    resolveVfsTargetMock.mockResolvedValue(backendWith({ content: 'x'.repeat(2000) }))
+    const goal = await readTeamBrief(context())
+    expect(goal?.length).toBe(801)
+    expect(goal?.endsWith('…')).toBe(true)
   })
 })
 
@@ -314,5 +334,23 @@ describe('member prompt section', () => {
       boardError: 'PERMISSION_DENIED',
     })
     expect(section).toContain('could not be updated (PERMISSION_DENIED)')
+  })
+
+  it('puts the run goal from the brief above the task', () => {
+    const section = buildTeamTaskSection({
+      runKey: RUN_KEY,
+      goal: 'Consolidate the four duplicate date parsers.',
+      brief: '- [running] t1: do it',
+      actorId: null,
+      taskId: 't1',
+    })
+    const goalIndex = section.indexOf('Run goal (from 00-brief.md)'.slice(0, 20))
+    expect(goalIndex).toBeGreaterThan(-1)
+    expect(section.indexOf('[running] t1')).toBeGreaterThan(goalIndex)
+  })
+
+  it('omits the goal line entirely when no brief was written', () => {
+    const section = buildTeamTaskSection({ runKey: RUN_KEY, brief: '- [x] t1: do it', actorId: null, taskId: 't1' })
+    expect(section).not.toContain('Run goal')
   })
 })

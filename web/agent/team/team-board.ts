@@ -1,6 +1,6 @@
 import type { ToolContext } from '../tools/tool-types'
 import { resolveVfsTarget } from '../tools/vfs-resolver'
-import { TEAM_LEDGER_FILE, TEAM_MANIFEST_FILE, teamMemberSlot } from './team-paths'
+import { TEAM_BRIEF_FILE, TEAM_LEDGER_FILE, TEAM_MANIFEST_FILE, teamMemberSlot } from './team-paths'
 import {
   emptyTeamManifest,
   findTeamTask,
@@ -57,6 +57,32 @@ export async function writeTeamManifest(context: ToolContext, manifest: TeamMani
   await target.backend.writeFile(target.path, serializeTeamManifest(manifest))
 }
 
+/**
+ * The run's goal, from `00-brief.md`.
+ *
+ * One source on purpose: the manifest holds state (what is in flight), the brief
+ * holds the shared statement of intent. Copying the goal into the manifest would
+ * give two answers that can drift, and the members would read whichever one the
+ * code happened to wire up.
+ */
+export async function readTeamBrief(context: ToolContext): Promise<string | null> {
+  const runKey = runKeyOf(context)
+  if (!runKey) return null
+  try {
+    const target = await resolveVfsTarget(`vfs://team/${runKey}/${TEAM_BRIEF_FILE}`, context, 'read')
+    if (target.kind !== 'team') return null
+    const result = await target.backend.readFile(target.path, { encoding: 'text' })
+    const raw = typeof result.content === 'string' ? result.content.trim() : ''
+    if (!raw) return null
+    // Bounded: a runaway brief must not crowd out the task itself.
+    return raw.length > TEAM_BRIEF_PROMPT_LIMIT ? `${raw.slice(0, TEAM_BRIEF_PROMPT_LIMIT)}…` : raw
+  } catch {
+    return null
+  }
+}
+
+const TEAM_BRIEF_PROMPT_LIMIT = 800
+
 export interface AssignTeamTaskInput {
   taskId: string
   /** Short summary of the work — the `description` of the spawn, not the prompt. */
@@ -70,6 +96,8 @@ export interface AssignTeamTaskResult {
   manifest: TeamManifest
   /** Prompt-ready view of this member's own task. */
   brief: string | null
+  /** The run's shared goal, read from `00-brief.md` (null when unwritten). */
+  runGoal: string | null
 }
 
 export interface AssignTeamTaskOutcome {
@@ -164,7 +192,7 @@ export async function assignTeamTask(
     } catch {
       // ignore: the manifest above is the record that matters
     }
-    return { result: { task, manifest: next, brief: renderTeamTask(next, taskId) } }
+    return { result: { task, manifest: next, brief: renderTeamTask(next, taskId), runGoal: await readTeamBrief(context) } }
   } catch (error) {
     return { error: error instanceof Error ? error.message : String(error) }
   }
@@ -281,12 +309,15 @@ function mergeHandoff(previous: TeamTaskHandoff | undefined,
 export function buildTeamTaskSection(input: {
   runKey: string
   brief: string | null
+  /** The run's goal, from `00-brief.md`. */
+  goal?: string | null
   actorId: string | null
   taskId: string | null
   boardError?: string
 }): string {
   const slot = teamMemberSlot({ actorId: input.actorId, taskId: input.taskId })
   const lines: string[] = ['## Your task on the team board', '']
+  if (input.goal) lines.push(`Run goal (from 00-brief.md): ${input.goal}`, '')
   if (input.brief) lines.push(input.brief, '')
   else lines.push('The lead did not record a task for this spawn; follow the prompt below.', '')
   const scope = slot

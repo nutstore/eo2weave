@@ -163,6 +163,8 @@ type SubagentTaskInternal = {
   teamTaskId?: string
   /** Prompt-ready view of that task; undefined = no board task recorded. */
   teamBrief?: string | null
+  /** The run's shared goal from 00-brief.md, so a member knows why it is here. */
+  teamGoal?: string | null
   /** Why the board could not be updated, surfaced to the member prompt. */
   teamBoardError?: string
 }
@@ -471,6 +473,7 @@ class SubagentRuntimeImpl implements SubagentRuntime {
         })
       }
       task.teamBrief = assigned.result?.brief ?? null
+      task.teamGoal = assigned.result?.runGoal ?? null
       task.teamBoardError = assigned.error
     }
     this.publishTask(task)
@@ -1370,6 +1373,7 @@ class SubagentRuntimeImpl implements SubagentRuntime {
       ? `${finalSystemPrompt}\n\n${buildTeamTaskSection({
           runKey: teamRunKey,
           brief: task.teamBrief ?? null,
+          goal: task.teamGoal ?? null,
           actorId: task.actorId ?? null,
           taskId: task.teamTaskId,
           boardError: task.teamBoardError,

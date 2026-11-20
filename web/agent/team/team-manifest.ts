@@ -259,12 +259,12 @@ export function renderTeamManifest(manifest: TeamManifest, options?: { actorId?:
  * Scoping by id (not by assignee) is deliberate: two anonymous members both have
  * `assignee: null`, so an assignee filter would hand each of them the other's
  * task. Returns `null` when the task is gone from the board.
+ *
+ * The run's goal is NOT rendered here: it lives in `00-brief.md` only, so there
+ * is one answer to "what is this run about" (see `buildTeamTaskSection`).
  */
 export function renderTeamTask(manifest: TeamManifest, taskId: string): string | null {
   const task = findTeamTask(manifest, taskId)
   if (!task) return null
-  const lines: string[] = []
-  if (manifest.goal) lines.push(`Run goal: ${manifest.goal}`)
-  lines.push(...renderTaskLines(task))
-  return lines.join('\n')
+  return renderTaskLines(task).join('\n')
 }

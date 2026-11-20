@@ -131,10 +131,11 @@ describe('team manifest views', () => {
   it('renders one task by id for the member prompt', () => {
     // Id, not assignee: two anonymous members share `assignee: null`.
     const text = renderTeamTask(sample, 't1')
-    expect(text).toContain('Run goal: Ship the board')
     expect(text).toContain('[running] t1: Audit the resolver @gatekeeper')
     expect(text).toContain('reads: 00-brief.md')
     expect(text).not.toContain('t2')
+    // The run goal is not part of the task: it comes from 00-brief.md.
+    expect(text).not.toContain('Run goal')
     expect(renderTeamTask(sample, 'gone')).toBeNull()
   })
 
