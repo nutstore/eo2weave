@@ -14,6 +14,7 @@ import {
 } from '@/sqlite/repositories/project.repository'
 import { ProjectManager } from '@/opfs'
 import { PROJECT_STORE_INIT_ERROR_KEY } from '@/lib/app-storage-keys'
+import { createProjectActivationTrace } from '@/store/project-activation-trace'
 
 /**
  * Classification of a project-store initialization failure.
@@ -710,21 +711,27 @@ export const useProjectStore = create<ProjectState>()(
 
     setActiveProject: async (projectId: string) => {
       set({ isLoading: true, error: null })
+      // Logging-only trace of the activation chain: each await below reports its
+      // own duration, and a watchdog re-announces the step that is still pending
+      // if the chain stops making progress (issue #316 — the stall used to be
+      // silent, and named no operation).
+      const trace = createProjectActivationTrace(projectId)
       try {
         const repo = getProjectRepository()
 
-        const targetProject = await repo.findById(projectId)
+        const targetProject = await trace.step('repo.findById', () => repo.findById(projectId))
         if (!targetProject) {
           await get().refreshProjects()
           set({
             error: `Project not found: ${projectId}`,
             isLoading: false,
           })
+          trace.finish('not-found')
           return false
         }
 
-        await repo.setActiveProject(projectId)
-        await bootstrapProjectOpfs(projectId)
+        await trace.step('repo.setActiveProject', () => repo.setActiveProject(projectId))
+        await trace.step('bootstrapProjectOpfs', () => bootstrapProjectOpfs(projectId))
         const now = Date.now()
 
         // 1. Clear stale workspace context atomically BEFORE updating activeProjectId.
@@ -733,8 +740,13 @@ export const useProjectStore = create<ProjectState>()(
         //    Uses the shared PENDING_RESET_PATCH so the badge count, pending file
         //    list, unsynced-snapshot list, etc. can never leak across project
         //    switches (Bug 2: stale badge count from old workspace).
-        const { useConversationContextStore } = await import('./conversation-context.store')
-        const { PENDING_RESET_PATCH } = await import('./workspace.store')
+        const { useConversationContextStore } = await trace.step(
+          'import:conversation-context.store',
+          () => import('./conversation-context.store')
+        )
+        const { PENDING_RESET_PATCH } = await trace.step('import:workspace.store', () =>
+          import('./workspace.store')
+        )
         useConversationContextStore.setState({
           ...PENDING_RESET_PATCH,
           activeWorkspaceId: null,
@@ -744,7 +756,10 @@ export const useProjectStore = create<ProjectState>()(
 
         // 1b. Clear active pointer only; keep conversation cache in memory so
         //     runs from other projects can continue without being torn down.
-        const { useConversationStoreSQLite } = await import('./conversation.store.sqlite')
+        const { useConversationStoreSQLite } = await trace.step(
+          'import:conversation.store.sqlite',
+          () => import('./conversation.store.sqlite')
+        )
         useConversationStoreSQLite.setState({
           activeConversationId: null,
         })
@@ -759,13 +774,16 @@ export const useProjectStore = create<ProjectState>()(
         //     synchronous continuation (no await between them), so within
         //     this tab a concurrent deletion cannot slip between the check
         //     and the commit.
-        const stillExists = await repo.findById(projectId)
+        const stillExists = await trace.step('repo.findById (revalidate)', () =>
+          repo.findById(projectId)
+        )
         if (!stillExists) {
           await get().refreshProjects()
           set({
             error: `Project not found: ${projectId}`,
             isLoading: false,
           })
+          trace.finish('not-found')
           return false
         }
 
@@ -789,26 +807,31 @@ export const useProjectStore = create<ProjectState>()(
         })
 
         // 3. Sync dependent stores.
-        const { useAgentStore } = await import('./agent.store')
-        await useAgentStore.getState().setActiveProject(projectId)
-        await syncAgentsForProject(projectId)
+        const { useAgentStore } = await trace.step('import:agent.store', () => import('./agent.store'))
+        await trace.step('agentStore.setActiveProject', () =>
+          useAgentStore.getState().setActiveProject(projectId)
+        )
+        await trace.step('syncAgentsForProject', () => syncAgentsForProject(projectId))
 
         // 4. Load workspace list for the new project.
         //    Do NOT pick a specific workspace here — the route sync effect
         //    (syncFromRoute in App.tsx) is responsible for selecting the
         //    correct workspace based on the URL.
-        await useConversationContextStore.getState().refreshWorkspaces()
+        await trace.step('refreshWorkspaces', () =>
+          useConversationContextStore.getState().refreshWorkspaces()
+        )
 
         // 4b. Refresh projectStats so the per-project conversation/workspace
         //     badge count reflects the freshly loaded project (otherwise it
         //     stays at the stale snapshot from initialize and shows e.g. "5"
         //     when the DB actually has 6).
-        await get().refreshProjects()
+        await trace.step('refreshProjects', () => get().refreshProjects())
 
         // 5. Loading complete — signal syncFromRoute effect to proceed.
         set({ isLoading: false })
 
         broadcastProjectChange({ type: 'updated', projectId })
+        trace.finish('ok')
         return true
       } catch (e: unknown) {
         const message = e instanceof Error ? e.message : 'Failed to set active project'
@@ -816,6 +839,7 @@ export const useProjectStore = create<ProjectState>()(
           error: message,
           isLoading: false,
         })
+        trace.finish('failed')
         return false
       }
     },

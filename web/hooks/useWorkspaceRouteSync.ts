@@ -8,6 +8,7 @@ import { useProjectStore } from '@/store/project.store'
 import { useConversationContextStore } from '@/store/conversation-context.store'
 import { useConversationStore } from '@/store/conversation.store'
 import { projectWorkspacePath } from '@/lib/route-paths'
+import { getPendingActivationStep } from '@/store/project-activation-trace'
 
 /**
  * useWorkspaceRouteSync — URL params → store sync for workspace pages.
@@ -33,6 +34,9 @@ export function useWorkspaceRouteSync(projectId: string, workspaceId?: string) {
   // metadata/active IDs but before their transcript reads have finished.
   const pendingLoad = useRef<Promise<void> | null>(null)
   const pendingActivation = useRef<{ workspaceId: string; promise: Promise<void> } | null>(null)
+  // Signature of the last "blocked by an in-flight activation" line, so a stall
+  // logs the pending step once per change instead of on every effect re-run.
+  const blockedActivationLog = useRef<string | null>(null)
 
   const setActiveProject = useProjectStore((s) => s.setActiveProject)
   const initialized = useProjectStore((s) => s.initialized)
@@ -48,7 +52,25 @@ export function useWorkspaceRouteSync(projectId: string, workspaceId?: string) {
     // that this effect itself modifies (prevents infinite loops).
     const _isStorageReady = useProjectStore.getState().initialized
     const _projectLoading = useProjectStore.getState().isLoading
-    if (!_isStorageReady || _projectLoading) return
+    if (!_isStorageReady || _projectLoading) {
+      // The guard is silent by design, but a project activation that never
+      // settles blocks the route here forever (issue #316). Name the step the
+      // in-flight activation is waiting on, once per change of step.
+      if (_projectLoading) {
+        const pendingStep = getPendingActivationStep()
+        const signature = `${projectId}:${pendingStep ?? 'none'}`
+        if (blockedActivationLog.current !== signature) {
+          blockedActivationLog.current = signature
+          console.log('[syncFromRoute] blocked by in-flight project activation', {
+            projectId,
+            activeProjectId: useProjectStore.getState().activeProjectId,
+            pendingStep,
+          })
+        }
+      }
+      return
+    }
+    blockedActivationLog.current = null
     // Note: projectLoading is in deps so the effect re-runs when a project
     // switch (set isLoading true→false) completes. The guard above returns
     // early while loading is in flight; this subscription is what wakes us
@@ -78,7 +100,16 @@ export function useWorkspaceRouteSync(projectId: string, workspaceId?: string) {
       // Step 2: Switch project if needed (this clears workspace state & loads new list)
       if (_activeProjectId !== projectId) {
         console.log('[syncFromRoute] switching project', { from: _activeProjectId, to: projectId })
+        const switchStartedAt = performance.now()
         const switched = await setActiveProject(projectId)
+        // Pairs with the trace above: if this line never appears, activation is
+        // still pending; `switched` plus the elapsed time says whether it
+        // settled and how long the whole chain took.
+        console.log('[syncFromRoute] project switch settled', {
+          projectId,
+          switched,
+          elapsedMs: Math.round(performance.now() - switchStartedAt),
+        })
         if (!switched) {
           console.warn('[syncFromRoute] setActiveProject returned false')
           if (!cancelled) {
