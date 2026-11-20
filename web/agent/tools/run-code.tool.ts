@@ -104,19 +104,16 @@ export const runCodeExecutor: ToolExecutor = async (args, context) => {
     (args.inputs ?? null) as JsonValue | null,
   )
   // A script that threw is a failed tool call: the envelope must say so, or
-  // policy hooks and loop guards treat it as success. Any output emitted before
-  // the failure is inlined, because the model only sees the error message.
+  // policy hooks and loop guards treat it as success. Output emitted before the
+  // failure travels as content parts, not as text pasted into the message — a
+  // flattened image part is no longer an image.
   if (!result.ok) {
-    const emitted = result.output
-      .map((part) => (part.type === 'text' ? part.text : `[image ${part.mimeType}]`))
-      .join('\n')
-      .trim()
-    const message = emitted
-      ? `${result.error.code}: ${result.error.message}\n\nOutput before failure:\n${emitted}`
-      : `${result.error.code}: ${result.error.message}`
-    return toolErrorJson(RUN_CODE_TOOL, result.error.code, message, {
+    return toolErrorJson(RUN_CODE_TOOL, result.error.code, `${result.error.code}: ${result.error.message}`, {
       retryable: result.error.code !== 'JS_CANCELED',
-      details: { steps: runner ? runner.steps : [], calls },
+      // `calls` stays out of details: it carries raw child results, images
+      // included, and details are model-facing. Only the step summary belongs here.
+      details: { steps: runner ? runner.steps : [] },
+      contentParts: result.output,
       meta: { calls, replay: replay ?? null, steps: runner ? runner.steps : [] },
     })
   }

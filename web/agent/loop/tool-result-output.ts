@@ -5,8 +5,17 @@ import { isToolEnvelopeV2 } from '../tools/tool-envelope'
 export function projectToolOutput(toolName: string, parsed: unknown, fallback: string): {
   text: string; output: OutputPart[]; isError: boolean
 } {
-  if (!isToolEnvelopeV2(parsed) || !parsed.ok)
-    return { text: fallback, output: [], isError: false }
+  if (!isToolEnvelopeV2(parsed)) return { text: fallback, output: [], isError: false }
+  if (!parsed.ok) {
+    // A failed envelope is an error, and a failed run_code keeps any output it
+    // emitted before dying. The parts travel as their own content items, so the
+    // envelope text must not repeat them (an image's base64 would land in the
+    // prompt twice); flattening them into the message, as this used to do, loses
+    // image blocks outright.
+    const { contentParts, ...rest } = parsed
+    const parts = contentParts?.length && contentParts.every(isOutputPart) ? contentParts : []
+    return { text: JSON.stringify(rest), output: parts, isError: true }
+  }
   if (toolName === 'run_code' && isCodeRunResult(parsed.data)) {
     const { output, ...result } = parsed.data
     return {

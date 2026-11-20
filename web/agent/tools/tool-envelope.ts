@@ -27,6 +27,12 @@ export interface ToolEnvelopeFailure {
   tool: string
   version: 2
   error: ToolEnvelopeError
+  /**
+   * Output emitted before the failure. A run that dies mid-script still
+   * produced text and images the caller must see, and dropping them to a
+   * flattened error message loses image parts entirely.
+   */
+  contentParts?: Array<{ type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string }>
   meta?: Record<string, unknown>
 }
 
@@ -68,6 +74,7 @@ export function toolErrorJson(
     hint?: string
     details?: Record<string, unknown>
     meta?: Record<string, unknown>
+    contentParts?: Array<{ type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string }>
   }
 ): string {
   const payload: ToolEnvelopeFailure = {
@@ -81,6 +88,7 @@ export function toolErrorJson(
       ...(options?.hint ? { hint: options.hint } : {}),
       ...(options?.details ? { details: options.details } : {}),
     },
+    ...(options?.contentParts ? { contentParts: options.contentParts } : {}),
     ...(options?.meta ? { meta: options.meta } : {}),
   }
   return JSON.stringify(payload)
