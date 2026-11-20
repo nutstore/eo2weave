@@ -76,10 +76,10 @@ describe('workspace-preferences.store agent mode isolation', () => {
     expect(isManualApplyPolicy('ws-a')).toBe(false)
     expect(isManualApplyPolicy('ws-b')).toBe(true)
 
-    // No workspace id (pre-conversation) falls back to the global switch.
+    // No workspace id = no policy entry to read: strict (manual), matching the
+    // run-end reader, regardless of the legacy global switch.
     useWorkspacePreferencesStore.setState({ autoApplyOnRunComplete: true })
-    expect(isManualApplyPolicy(null)).toBe(false)
-    useWorkspacePreferencesStore.setState({ autoApplyOnRunComplete: false })
+    expect(isManualApplyPolicy(null)).toBe(true)
     expect(isManualApplyPolicy(undefined)).toBe(true)
   })
 })
