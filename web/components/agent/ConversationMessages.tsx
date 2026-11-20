@@ -202,6 +202,8 @@ type ConversationFooterProps = {
   queuedMessages: { text: string; assets?: unknown[]; enqueuedAt: number }[]
   mentionAgents: { id: string; name?: string }[]
   onSearchFiles?: (query: string) => Promise<FileMentionItem[]>
+  /** Open the shared FilePreview drawer with a pre-loaded blob (queued attachments) */
+  onPreviewAsset?: (name: string, blob: Blob) => void
   messagesEndRef: React.RefObject<HTMLDivElement>
   t: ReturnType<typeof useT>
 }
@@ -215,6 +217,7 @@ function ConversationFooterInner({
   queuedMessages,
   mentionAgents,
   onSearchFiles,
+  onPreviewAsset,
   messagesEndRef,
   t,
 }: ConversationFooterProps) {
@@ -253,6 +256,7 @@ function ConversationFooterInner({
               assets={msg.assets as never}
               mentionAgents={mentionAgents}
               onSearchFiles={onSearchFiles}
+              onPreviewAsset={onPreviewAsset}
               onUpdate={(i, patch) => {
                 if (conversationId) {
                   useConversationRuntimeStore.getState().updateQueuedMessage(conversationId, i, patch)
@@ -956,6 +960,7 @@ export const ConversationMessages = memo(forwardRef(function ConversationMessage
       queuedMessages={queuedMessages}
       mentionAgents={mentionAgents}
       onSearchFiles={onSearchFiles}
+      onPreviewAsset={onPreviewAsset}
       messagesEndRef={messagesEndRef}
       t={t}
     />
