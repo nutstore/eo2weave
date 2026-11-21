@@ -100,3 +100,32 @@ it('suppresses just the selected execution and ignores a stale task selection', 
   expect(useSubagentTaskStore.getState().tasks.selected.deliveryPhase).toBe('suppressed')
   expect(useSubagentTaskStore.getState().tasks.other.deliveryPhase).toBe('pending')
 })
+
+describe('hydration keeps transcripts out of memory', () => {
+  it('publishes metadata only, so a past transcript is not retained at startup', async () => {
+    // Regression guard: hydration used to publish the full `messages` array of
+    // every task of every conversation, which a long session never released.
+    const { recoverSubagentContinuations } = await import('../subagent-continuation')
+    const { getSubagentRepository } = await import('@/sqlite/repositories/subagent.repository')
+    const repository = await getSubagentRepository()
+    vi.spyOn(repository, 'findByWorkspaceId').mockResolvedValue([{
+      agentId: 'historic',
+      workspaceId: 'conv-hydrate',
+      name: 'historic',
+      description: 'Past work',
+      status: 'completed',
+      subagent_type: 'explorer',
+      messages: [{ id: 'm1', role: 'assistant', content: 'a very large past transcript', timestamp: 1 }],
+      created_at: 1,
+      updated_at: 2,
+      last_activity_at: 2,
+    } as never])
+
+    await recoverSubagentContinuations(['conv-hydrate'])
+
+    const projection = useSubagentTaskStore.getState().tasks.historic
+    expect(projection).toBeDefined()
+    expect(projection.description).toBe('Past work')
+    expect(projection.messages).toEqual([])
+  })
+})
