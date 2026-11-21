@@ -124,6 +124,8 @@ type SubagentTaskInternal = {
   accepted: boolean
   persistence?: Promise<void>
   terminalPersisting?: boolean
+  /** True once this task's transcript is in SQLite, so the live copy can be dropped. */
+  transcriptPersisted?: boolean
   name?: string
   description: string
   status: SubagentTaskStatus
@@ -1945,6 +1947,8 @@ class SubagentRuntimeImpl implements SubagentRuntime {
     }
     if (execution.suppressed || task.stopped) completion.status = 'suppressed'
     task.terminalPersisting = false
+    // The transcript above is committed, so the store no longer needs its own copy.
+    task.transcriptPersisted = true
     execution.completion = completion
     this.completions.set(id, completion)
     this.publishTask(task)
@@ -1977,6 +1981,14 @@ class SubagentRuntimeImpl implements SubagentRuntime {
     const execution = task.latestExecution
     const previous = useSubagentTaskStore.getState().tasks[task.agentId]
     const deliveryPhase = previous?.executionId === execution?.executionId ? previous?.deliveryPhase : undefined
+    // A finished member's transcript already lives in SQLite, so keeping the live
+    // copy here is pure duplication: this store was the largest retained object in a
+    // production heap (67.7 MB, 48% of the tab). The panel reads the transcript back
+    // on demand, and an unfinished task keeps its messages because nothing else has them.
+    const finished = task.status !== 'pending' && task.status !== 'running'
+    // A stop is a user action taken while the panel is open on the live trace, so
+    // that case keeps its copy until the next reload.
+    const messages = finished && task.transcriptPersisted && !task.stopped ? [] : [...task.messages]
     useSubagentTaskStore.getState().publish({
       agentId: task.agentId, conversationId: execution?.conversationId ?? this.deps.workspaceId,
       parentToolCallId: task.parentToolCallId, name: task.name, description: task.description,
@@ -1988,7 +2000,7 @@ class SubagentRuntimeImpl implements SubagentRuntime {
         ? deliveryPhase
         : execution?.completion?.status === 'pending'
           ? deliveryPhase ?? 'pending'
-          : execution?.completion?.status ?? deliveryPhase, messages: [...task.messages],
+          : execution?.completion?.status ?? deliveryPhase, messages,
     })
   }
 
@@ -2074,6 +2086,8 @@ class SubagentRuntimeImpl implements SubagentRuntime {
           ? { ...this.createExecution(item.execution.isAsync), ...item.execution }
           : { ...this.createExecution(false), executionId: `legacy:${item.agentId}` }
         revived.execution = execution
+        // Revived from SQLite, so the persisted copy already owns the transcript.
+        revived.transcriptPersisted = true
         revived.latestExecution = execution
         if (revived.status !== 'pending' && revived.status !== 'running') {
           const { getSubagentCompletionRepository } = await this.repositories

@@ -250,7 +250,13 @@ describe('subagent runtime', () => {
 
     acknowledge({ applied: true })
     await vi.advanceTimersByTimeAsync(0)
-    expect(useSubagentTaskStore.getState().tasks[receipt.agentId].messages).toContainEqual(checkpoint)
+    // The canonical trace reaches the child and is committed, but a finished member
+    // no longer keeps a second copy in the store — the panel reads it back from
+    // SQLite. Durability is what this test is about, so assert it on the write.
+    expect(hoisted.repo.commitMessages).toHaveBeenCalledWith(expect.objectContaining({
+      messages: expect.arrayContaining([checkpoint]),
+    }))
+    expect(useSubagentTaskStore.getState().tasks[receipt.agentId].messages).toEqual([])
     expect(dispatch).toHaveBeenCalledOnce()
   })
 
@@ -1796,5 +1802,26 @@ describe('subagent runtime', () => {
       | undefined
     const saved = call?.[1] ?? []
     expect(saved.find((task) => task.agentId === 'subagent_restored_deadline')?.timeout_ms).toBe(900000)
+  })
+
+  it('drops the live transcript once a finished task is persisted', async () => {
+    const runtime = createRuntime('terminal-transcript', [])
+    const receipt = await runtime.start({ description: 'task', prompt: 'work' })
+    await vi.advanceTimersByTimeAsync(1)
+
+    const projection = useSubagentTaskStore.getState().tasks[receipt.agentId]
+    expect(projection.status).toBe('completed')
+    // SQLite owns the transcript from here on; the store copy was 48% of a
+    // production heap. The panel reads it back when a row is expanded.
+    expect(projection.messages).toEqual([])
+
+    // ...and it was dropped after the write, not before it.
+    const persisted = [
+      ...hoisted.repo.saveBatch.mock.calls,
+      ...hoisted.repo.transitionStatus.mock.calls,
+      ...hoisted.repo.commitMessages.mock.calls,
+      ...hoisted.repo.finishExecution.mock.calls,
+    ].some((call) => JSON.stringify(call).includes('"content":"ok"'))
+    expect(persisted).toBe(true)
   })
 })
