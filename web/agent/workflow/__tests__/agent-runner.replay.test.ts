@@ -3,8 +3,8 @@ import type { JsonValue } from '@creatorweave/quickjs-runtime'
 import { createAgentRunner, type AgentStepRecord, type AgentStepStore } from '../agent-runner'
 import type { SubagentRuntime } from '@/agent/tools/tool-types'
 
-/** The runner's optionsKey for default options: name, type, mode, timeout, as, role, capabilities. */
-const DEFAULT_KEY = JSON.stringify([null, null, null, null, null, null, null])
+/** The runner's optionsKey for default options: name, type, mode, timeout, as, role, capabilities, task, handoff. */
+const DEFAULT_KEY = JSON.stringify([null, null, null, null, null, null, null, null, null])
 
 function completedRow(stepIndex: number, prompt: string, result: string): AgentStepRecord {
   return {
@@ -151,5 +151,50 @@ describe('agent runner replay', () => {
 
     expect(result.cached).toBe(false)
     expect(spawn).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('agent runner team binding', () => {
+  it('forwards task_id and handoff, and names the step after the task', async () => {
+    const { runtime, spawn } = fakeRuntime()
+    const runner = createAgentRunner({ runtime })
+
+    await runner.runAgent('a', {
+      task_id: 't1',
+      handoff: { expects: 'file:line list', reads: ['00-brief.md'], writes: ['by/t1/out.md'] },
+    })
+
+    expect(spawn).toHaveBeenCalledTimes(1)
+    expect(spawn.mock.calls[0][0]).toMatchObject({
+      name: 't1',
+      description: 't1',
+      task_id: 't1',
+      handoff: { expects: 'file:line list', reads: ['00-brief.md'], writes: ['by/t1/out.md'] },
+    })
+  })
+
+  it('drops a malformed handoff instead of handing it to the board', async () => {
+    const { runtime, spawn } = fakeRuntime()
+    const runner = createAgentRunner({ runtime })
+
+    await runner.runAgent('a', { task_id: 't1', handoff: { expects: 42, reads: 'nope' } })
+
+    expect(spawn.mock.calls[0][0]).toMatchObject({ task_id: 't1', handoff: undefined })
+  })
+
+  it('treats the task binding as part of the step identity', async () => {
+    // The task section is injected into the child's prompt, so binding a step to
+    // a different task must not be served the previous task's answer.
+    const { store } = fakeStore()
+    const first = fakeRuntime()
+    await createAgentRunner({ runtime: first.runtime, store, runId: 'run-1' })
+      .runAgent('a', { task_id: 't1' })
+
+    const second = fakeRuntime()
+    const rebound = await createAgentRunner({ runtime: second.runtime, store, runId: 'run-1' })
+      .runAgent('a', { task_id: 't2' })
+
+    expect(rebound.cached).toBe(false)
+    expect(second.spawn).toHaveBeenCalledTimes(1)
   })
 })

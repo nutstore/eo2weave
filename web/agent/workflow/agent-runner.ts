@@ -14,6 +14,7 @@
  */
 
 import type { JsonValue } from '@creatorweave/quickjs-runtime'
+import type { TeamTaskHandoff } from '@/agent/team/team-manifest'
 import type { SubagentCapabilities, SubagentRuntime, SubagentType } from '@/agent/tools/tool-types'
 
 /** Upper bound on agent() calls per script — bounds the cost of a runaway run. */
@@ -107,8 +108,37 @@ interface NormalizedOptions {
    * row is served, not what the child is asked or who it runs as.
    */
   retry?: true
+  /** Team board task this step fulfils, so a team can run inside one card. */
+  taskId?: string
+  /** What the lead expects back, what to read first, what to produce. */
+  handoff?: TeamTaskHandoff
   /** Exact identity of everything that shapes the child's answer. */
   optionsKey: string
+}
+
+/**
+ * Keep only the shape the runtime understands. A handoff is free text from the
+ * model, so anything malformed is dropped rather than handed to the board.
+ */
+function normalizeHandoff(raw: JsonValue): TeamTaskHandoff | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined
+  const source = raw as Record<string, JsonValue>
+  const text = (value: JsonValue): string | undefined =>
+    typeof value === 'string' && value.trim() ? value.trim().slice(0, 500) : undefined
+  const list = (value: JsonValue): string[] | undefined => {
+    if (!Array.isArray(value)) return undefined
+    const kept = value.filter((item): item is string => typeof item === 'string' && !!item.trim())
+      .map(item => item.trim().slice(0, 200))
+    return kept.length ? kept : undefined
+  }
+  const handoff: TeamTaskHandoff = {}
+  const expects = text(source.expects)
+  if (expects) handoff.expects = expects
+  const reads = list(source.reads)
+  if (reads) handoff.reads = reads
+  const writes = list(source.writes)
+  if (writes) handoff.writes = writes
+  return Object.keys(handoff).length ? handoff : undefined
 }
 
 function normalizeOptions(raw: JsonValue | undefined, agentMode?: 'plan' | 'act'): NormalizedOptions {
@@ -133,6 +163,12 @@ function normalizeOptions(raw: JsonValue | undefined, agentMode?: 'plan' | 'act'
   else if (typeof record.as === 'string' && record.as.trim()) resolved.as = record.as.trim().slice(0, 64)
   if (typeof record.role === 'string' && record.role.trim()) resolved.role = record.role.trim().slice(0, 500)
   if (record.retry === true) resolved.retry = true
+  // Team binding. `task_id` also names the step, so a team run reads as one card
+  // with one row per member instead of N indistinguishable "agent step" rows.
+  if (typeof record.task_id === 'string' && record.task_id.trim()) {
+    resolved.taskId = record.task_id.trim().slice(0, 64)
+  }
+  resolved.handoff = normalizeHandoff(record.handoff)
   // Capability boundary requested by the script. Class names are validated in
   // the runtime (unknown names throw), so only shape normalization happens here.
   if (record.capabilities && typeof record.capabilities === 'object' && !Array.isArray(record.capabilities)) {
@@ -163,6 +199,10 @@ function normalizeOptions(raw: JsonValue | undefined, agentMode?: 'plan' | 'act'
       // Restricting tools changes what the answer could possibly be; a narrowed
       // rerun must not be served a cached result from an unrestricted one.
       resolved.capabilities ? JSON.stringify(resolved.capabilities) : null,
+      // The task section is injected into the child's prompt, so a different
+      // task or handoff is a different question even when the text matches.
+      resolved.taskId ?? null,
+      resolved.handoff ? JSON.stringify(resolved.handoff) : null,
     ]),
   }
 }
@@ -302,15 +342,17 @@ export function createAgentRunner(options: AgentRunnerOptions): AgentRunner {
     const startedAt = now()
     try {
       const spawned = await spawnWithUniqueName(options.runtime, {
-        description: normalized.name || `agent step ${index + 1}`,
+        description: normalized.name || normalized.taskId || `agent step ${index + 1}`,
         prompt,
-        name: normalized.name,
+        name: normalized.name ?? normalized.taskId,
         mode: options.agentMode === 'plan' ? 'plan' : normalized.mode,
         subagent_type: normalized.subagent_type,
         timeout_ms: normalized.timeout_ms,
         as: normalized.as,
         role: normalized.role,
         capabilities: normalized.capabilities,
+        task_id: normalized.taskId,
+        handoff: normalized.handoff,
         parentToolCallId: options.parentToolCallId,
       }, signal)
       const usage = spawned.usage as unknown as JsonValue | undefined

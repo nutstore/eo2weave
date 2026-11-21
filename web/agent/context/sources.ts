@@ -69,21 +69,21 @@ export function createRuntimeContextSources(input: () => InjectEnhancementsInput
         // path it could not use while the ACL allowed a different one.)
         const slot = teamMemberSlot({ actorId: ctx.currentAgentId, taskId: ctx.teamTaskId })
         lines.push(
-          `- Read anything on it: \`${root}/00-brief.md\` (the goal), \`${root}/manifest.json\` (task list), other members' notes under \`${root}/by/\`.`,
+          `- Read anything on it: \`${root}/00-brief.md\` (the goal, if the lead wrote one) and other members' notes under \`${root}/by/\`.`,
           canWrite && slot
-            ? `- Your own space is \`${root}/${slot}/\` — put what the lead needs from you there (findings, file:line evidence, links). Everything else is read-only.`
+            ? `- Answer in your final message — that is what the lead receives. Put long artifacts instead in \`${root}/${slot}/\`; everything else on the board is read-only.`
             : canWrite
               ? '- You have no write area on this board: return your findings in your final message.'
               : '- You cannot write anything: this execution is read-only.',
         )
       } else {
         lines.push(
-          `- \`${root}/00-brief.md\` — the goal in a few lines. Write it before you spawn anyone, so members read one shared statement instead of your prompt each.`,
+          '- A team belongs in **one** `run_code` call: `await Promise.all([agent(p1, { task_id: "t1" }), agent(p2, { task_id: "t2" })])`. Each `agent()` blocks until that member answers, so the script can branch on results, and the whole team renders as one card instead of a trail of steps.',
+          '- `spawn_subagent` is for a single fire-and-forget task; for a team, prefer the script above.',
           canWrite
-            ? `- \`${root}/manifest.json\` — the task list (goal / assignee / status / artifacts). Only you write it; members never do, so there is exactly one writer.`
+            ? `- The board under \`${root}/\` maintains itself (task list, ledger, per-member directories). You do not write it — read it only to review what the team did.`
             : '- You cannot write to it: this execution is read-only.',
-          `- \`${root}/by/{actorId}/\` — one directory per member; each may write only its own. Read them freely, including runs from other turns.`,
-          '- Avoid passing long task text back and forth in prompts: put it on the board and hand over the path.',
+          '- If the members need one shared statement of the goal, put it in `00-brief.md` once; otherwise each task description is enough.',
         )
       }
       return { value: lines.join('\n') }

@@ -87,12 +87,16 @@ describe('team board section', () => {
     expect(await entriesOf('team-board', {})).toEqual({})
   })
 
-  it('tells the lead which files only it may write', async () => {
+  it('tells the lead to run a team inside one run_code call', async () => {
     const text = JSON.stringify(await entriesOf('team-board', { teamRunKey: runKey }))
-    expect(text).toContain(`vfs://team/${runKey}/00-brief.md`)
-    expect(text).toContain('manifest.json')
-    // Exactly one writer for the task list is the whole point of the ACL.
-    expect(text).toContain('Only you write it')
+    // The board is a review surface, not a document the model maintains: telling
+    // a lead to hand-write manifest.json cost more tool calls than the actual
+    // work in a real run.
+    expect(text).toContain('run_code')
+    expect(text).toContain('task_id')
+    expect(text).toContain('maintains itself')
+    expect(text).not.toContain('Only you write it')
+    expect(text).not.toContain('manifest.json')
   })
 
   it('points a member at its own directory and says the rest is read-only', async () => {
@@ -102,7 +106,9 @@ describe('team board section', () => {
       currentAgentId: 'member-a',
     }))
     expect(text).toContain(`vfs://team/${runKey}/by/member-a/`)
-    expect(text).toContain('Everything else is read-only')
+    expect(text).toContain('read-only')
+    // The final message is the primary channel; the slot is for long artifacts.
+    expect(text).toContain('Answer in your final message')
     expect(text).not.toContain('Only you write it')
   })
 
