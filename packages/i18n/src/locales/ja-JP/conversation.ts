@@ -37,6 +37,7 @@ export const conversation = {
         rejected: "未送信",
         restoring: "保存済みの実行記録を復元中…",
         noTrace: "保存済みの実行記録はありません。",
+        nestedLimit: "入れ子が深すぎます — 子エージェントはそれぞれのメッセージから開いてください。",
         waiting: "応答を待機中…",
     },
     directChat: {

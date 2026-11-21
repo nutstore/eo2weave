@@ -7,6 +7,7 @@ import { Loader2 } from 'lucide-react'
 import type { DraftAssistantStep, Message } from '@/agent/message-types'
 import { getSubagentRepository } from '@/sqlite'
 import { ToolCallDisplay } from './ToolCallDisplay'
+import { MAX_SUBAGENT_DEPTH } from './subagent-depth'
 import { ReasoningSection } from './ReasoningSection'
 import { MarkdownContent } from './MarkdownContent'
 import { useStreamingMarkdown } from './use-streaming-markdown'
@@ -75,6 +76,7 @@ function renderSubagentStep(
   step: DraftAssistantStep,
   toolResults: Map<string, string>,
   conversationId?: string,
+  depth = 0,
 ): React.ReactNode {
   if (step.type === 'reasoning') {
     if (!step.content) return null
@@ -108,6 +110,7 @@ function renderSubagentStep(
   return (
     <ToolCallDisplay
       conversationId={conversationId}
+      depth={depth}
       toolCall={step.toolCall}
       result={step.result ?? toolResults.get(step.toolCall.id)}
       isExecuting={step.streaming && !(step.result ?? toolResults.get(step.toolCall.id))}
@@ -170,11 +173,14 @@ interface SubagentDetailPanelProps {
   agentId: string
   /** conversationId is also the workspace ID used by persisted subagent tasks. */
   conversationId?: string
+  /** Panel nesting level. The main conversation is 0; see MAX_SUBAGENT_DEPTH. */
+  depth?: number
 }
 
 export const SubagentDetailPanel = memo(function SubagentDetailPanel({
   agentId,
   conversationId,
+  depth = 0,
 }: SubagentDetailPanelProps) {
   const t = useT()
   const task = useSubagentTaskStore(selectSubagentTask(agentId))
@@ -260,11 +266,21 @@ export const SubagentDetailPanel = memo(function SubagentDetailPanel({
     )
   }
 
+  if (depth > MAX_SUBAGENT_DEPTH) {
+    // Rendering further would fetch another transcript per level and re-render the
+    // same messages once per ancestor, so stop here and say so.
+    return (
+      <div className="px-3 py-2 text-xs text-neutral-400">
+        {t('conversation.backgroundTasks.nestedLimit')}
+      </div>
+    )
+  }
+
   return (
     <div className="min-w-0 space-y-1.5 overflow-x-hidden px-1 py-1">
       {steps.map((step) => (
         <div key={step.id}>
-          {renderSubagentStep(step, toolResults, conversationId)}
+          {renderSubagentStep(step, toolResults, conversationId, depth)}
         </div>
       ))}
     </div>

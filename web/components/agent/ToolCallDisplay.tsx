@@ -76,6 +76,8 @@ interface ToolCallDisplayProps {
   subagentEvents?: SubagentEvent[]
   /** Conversation ID — needed for ask_user_question to bridge UI answer back to executor */
   conversationId?: string
+  /** Panel nesting level, so a transcript inside a transcript stops deepening. */
+  depth?: number
 }
 
 // ─── Subagent helpers (kept from original) ────────────────────
@@ -147,6 +149,7 @@ function buildCtx(props: ToolCallDisplayProps): ToolRenderCtx {
     toolName: toolCall.function.name,
     toolCallId: toolCall.id,
     conversationId: props.conversationId,
+    depth: props.depth ?? 0,
     args,
     rawArgs,
     result: parsedResult,
@@ -254,6 +257,7 @@ export const ToolCallDisplay = memo(function ToolCallDisplay(props: ToolCallDisp
         onToggle={() => setExpanded(!expanded)}
         subagentEvents={subagentEvents}
         conversationId={conversationId}
+        depth={props.depth ?? 0}
         t={t}
       />
     )
@@ -365,6 +369,7 @@ function SubagentCard({
   onToggle,
   subagentEvents,
   conversationId,
+  depth = 0,
   t,
 }: {
   ctx: ToolRenderCtx
@@ -373,6 +378,7 @@ function SubagentCard({
   onToggle: () => void
   subagentEvents?: SubagentEvent[]
   conversationId?: string
+  depth?: number
   t: (key: string) => string
 }) {
   const spawnResult = parseSpawnResult(ctx.rawResult)
@@ -438,7 +444,7 @@ function SubagentCard({
 
       {expanded && (
         <div id={detailsId} className="min-w-0 border-t border-neutral-200 px-3 py-2 dark:border-neutral-700">
-          {agentIds.map(agentId => <SubagentHistoryRow key={agentId} agentId={agentId} conversationId={conversationId}
+          {agentIds.map(agentId => <SubagentHistoryRow key={agentId} agentId={agentId} conversationId={conversationId} depth={depth}
             name={resultTasks.find(task => task.agentId === agentId)?.name} status={resultTasks.find(task => task.agentId === agentId)?.status} />)}
           {rejected.map((item, index) => <p key={item.task_index ?? index} className="break-words py-1 text-xs text-red-600 dark:text-red-400">
             {t('conversation.backgroundTasks.rejected')}: {item.reason}

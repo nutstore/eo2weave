@@ -37,6 +37,7 @@ export const conversation = {
         rejected: "未提交",
         restoring: "正在恢复已保存的执行记录…",
         noTrace: "暂无已保存的执行记录。",
+        nestedLimit: "嵌套层级过深 —— 请从子代理各自的消息里打开，避免逐层重复读取转录。",
         waiting: "等待响应…",
     },
     directChat: {

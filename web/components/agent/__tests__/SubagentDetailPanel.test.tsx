@@ -1,6 +1,7 @@
 import { act, render, screen } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { SubagentDetailPanel } from '../SubagentDetailPanel'
+import { MAX_SUBAGENT_DEPTH } from '../subagent-depth'
 import { useSubagentTaskStore } from '@/store/subagent-task.store'
 
 const findByAgentId = vi.fn()
@@ -28,6 +29,21 @@ vi.mock('../ReasoningSection', () => ({
 beforeEach(() => useSubagentTaskStore.setState({ tasks: {} }))
 
 describe('SubagentDetailPanel', () => {
+  it('stops rendering a transcript nested past the depth limit', () => {
+    // Deep nesting re-reads every ancestor's transcript, so the panel refuses
+    // instead of expanding forever.
+    const task = { agentId: 'deep', conversationId: 'original', description: 'Deep', role: 'explorer' as const, status: 'completed' as const, createdAt: 1, updatedAt: 1, lastActivity: 1, isAsync: true, messages: [{ id: 'deep-1', role: 'assistant' as const, content: 'too deep to show', timestamp: 1 }] }
+    useSubagentTaskStore.getState().publish(task)
+    render(<SubagentDetailPanel agentId="deep" conversationId="original" depth={MAX_SUBAGENT_DEPTH + 1} />)
+    expect(screen.queryByText('too deep to show')).toBeNull()
+  })
+
+  it('still renders a transcript at the depth limit', () => {
+    const task = { agentId: 'at-limit', conversationId: 'original', description: 'Limit', role: 'explorer' as const, status: 'completed' as const, createdAt: 1, updatedAt: 1, lastActivity: 1, isAsync: true, messages: [{ id: 'limit-1', role: 'assistant' as const, content: 'still visible', timestamp: 1 }] }
+    useSubagentTaskStore.getState().publish(task)
+    render(<SubagentDetailPanel agentId="at-limit" conversationId="original" depth={MAX_SUBAGENT_DEPTH} />)
+    expect(screen.getByText('still visible')).toBeInTheDocument()
+  })
   it('keeps receiving execution traces after the parent draft is cleared', async () => {
     const task = { agentId: 'live-child', conversationId: 'original', description: 'Inspect', role: 'explorer' as const, status: 'running' as const, createdAt: 1, updatedAt: 1, lastActivity: 1, isAsync: true, messages: [{ id: 'live', role: 'assistant' as const, content: 'Reading files', timestamp: 1 }] }
     useSubagentTaskStore.getState().publish(task)

@@ -36,6 +36,7 @@ export const conversation = {
         rejected: "Not submitted",
         restoring: "Restoring saved execution…",
         noTrace: "No saved execution is available.",
+        nestedLimit: "Nested this deep — open the child from its own message to avoid re-reading every transcript above it.",
         waiting: "Waiting for a response…",
     },
     directChat: {
