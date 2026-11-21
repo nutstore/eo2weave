@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { collectContextSources, foldContext, reconcileContext, type ContextObservation } from '@/agent/context/journal'
+import { collectContextSources, foldContext, reconcileContext, requestEnvelope, type ContextObservation } from '@/agent/context/journal'
 import type { Message } from '@/agent/message-types'
 
 const skills = (count: number): ContextObservation[] => [{
@@ -105,6 +105,21 @@ describe('context journal', () => {
     const next = reconcileContext(history, skills(12), 'different tools')!
     expect(next.contextCommit!.epoch).not.toBe(history[0].contextCommit!.epoch)
     expect(next.contextCommit!.changes[0].snapshot).toEqual(skills(12)[0].entries)
+  })
+
+  it('does not treat a system prompt edit as a request change', () => {
+    // The envelope has no prompt input on purpose: sources are collected
+    // independently of the prompt, so a prompt edit keeps applying deltas. Taking
+    // the prompt as an ingredient re-published a full snapshot of every source on
+    // any turn that changed a dynamic prompt section (~108 KB per turn).
+    const base = {
+      provider: 'openai', model: 'gpt', api: 'responses', baseUrl: null,
+      tools: [{ name: 'read', description: 'Read a file', parameters: { type: 'object' } }],
+    }
+    expect(requestEnvelope(base)).toBe(requestEnvelope({ ...base }))
+    // Real request changes still rebase.
+    expect(requestEnvelope({ ...base, model: 'other' })).not.toBe(requestEnvelope(base))
+    expect(requestEnvelope({ ...base, tools: [...base.tools, { name: 'write' }] })).not.toBe(requestEnvelope(base))
   })
 
   it('rejects duplicate source registration', async () => {

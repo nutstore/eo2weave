@@ -35,6 +35,34 @@ export function canonicalEntries(entries: ContextEntries): ContextEntries {
   return Object.fromEntries(Object.keys(entries).sort().map(key => [key, entries[key]]))
 }
 
+/**
+ * Identity of the request a journal's deltas apply to.
+ *
+ * Deliberately has no system-prompt input: sources are collected independently of
+ * the prompt, so editing it does not invalidate the journal. Taking the prompt as
+ * an ingredient here made every turn that touched a dynamic prompt section start a
+ * new epoch, and a new epoch re-publishes a full snapshot of every source (the
+ * memory files, the day log, the skill list) instead of a delta.
+ */
+export interface RequestEnvelopeInput {
+  provider: string
+  model: string
+  api?: string | null
+  baseUrl?: string | null
+  tools: readonly { name: string; description?: string; parameters?: unknown }[]
+}
+
+export function requestEnvelope(input: RequestEnvelopeInput): string {
+  return JSON.stringify({
+    version: 1,
+    provider: input.provider,
+    model: input.model,
+    api: input.api ?? null,
+    baseUrl: input.baseUrl ?? null,
+    tools: input.tools,
+  })
+}
+
 /** Sources fail independently. A failed collector cannot withdraw previously published state. */
 export async function collectContextSources(sources: readonly ContextSource[]): Promise<ContextObservation[]> {
   const ids = new Set<string>()
