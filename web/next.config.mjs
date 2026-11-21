@@ -99,7 +99,16 @@ const nextConfig = {
     NEXT_PUBLIC_JIANGUOYUN_AI_CLIENT_ID:
       process.env.NEXT_PUBLIC_JIANGUOYUN_AI_CLIENT_ID || '',
   },
-  webpack(config, { webpack, isServer }) {
+  webpack(config, { webpack, isServer, dev }) {
+    // `eval-source-map` (Next's dev default) keeps every module's source plus a
+    // base64 source map alive as an evaluatable string for HMR: measured at 794 MB
+    // of a dev tab here, against 28 MB in a production build. Setting this variable
+    // lets a session trade rebuild speed for memory without waiting for a build:
+    //   CW_WEBPACK_DEVTOOL=false pnpm dev        closest to production, no debugging
+    //   CW_WEBPACK_DEVTOOL=source-map pnpm dev   keeps debugging, slower rebuilds
+    if (dev && !isServer && process.env.CW_WEBPACK_DEVTOOL) {
+      config.devtool = process.env.CW_WEBPACK_DEVTOOL
+    }
     // This client-heavy application produces a multi-gigabyte persistent
     // webpack cache; disable it so builds remain viable in
     // constrained CI and local disk environments.
