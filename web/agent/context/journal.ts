@@ -27,8 +27,28 @@ export interface ContextCommit {
   version: 1
   epoch: string
   sequence: number
-  envelope: string
+  /**
+   * Digest of the request envelope, NOT the envelope itself.
+   *
+   * Every commit used to carry the full envelope: the provider/model/tool list plus
+   * the whole system prompt. That was ~90 KB of identical text written on every
+   * turn that changed any source, and it dwarfed the change it described (a 845-byte
+   * team-board delta sat next to a 90,670-byte envelope). Only equality is ever
+   * needed, so a digest carries the same meaning at a few bytes.
+   */
+  envelopeDigest: string
   changes: ContextChange[]
+}
+
+/** Deterministic 64-bit FNV-1a, hex. Equality only — never a security boundary. */
+export function envelopeDigest(envelope: string): string {
+  let hash = 0xcbf29ce484222325n
+  const prime = 0x100000001b3n
+  const mask = 0xffffffffffffffffn
+  for (let index = 0; index < envelope.length; index++) {
+    hash = ((hash ^ BigInt(envelope.charCodeAt(index))) * prime) & mask
+  }
+  return hash.toString(16).padStart(16, '0')
 }
 
 export function canonicalEntries(entries: ContextEntries): ContextEntries {
@@ -128,7 +148,8 @@ export function reconcileContext(
   // A broken baseline means history was trimmed; re-publish full snapshots in a new epoch.
   if (broken.size > 0) reset = true
   const last = [...history].reverse().find(message => message.contextCommit)?.contextCommit
-  const newEpoch = reset || !last || last.envelope !== envelope
+  const digest = envelopeDigest(envelope)
+  const newEpoch = reset || !last || last.envelopeDigest !== digest
   const current = new Map(observations.map(observation => [observation.sourceId, canonicalEntries(observation.entries)]))
   // Rebase known state even if its collector is temporarily unavailable after compaction.
   if (newEpoch) for (const [id, state] of states) if (!current.has(id)) current.set(id, state.entries)
@@ -155,7 +176,7 @@ export function reconcileContext(
   if (!newEpoch && changes.length === 0) return
   const commit: ContextCommit = {
     version: 1, epoch: newEpoch ? generateId() : last!.epoch,
-    sequence: (last?.sequence ?? 0) + 1, envelope, changes,
+    sequence: (last?.sequence ?? 0) + 1, envelopeDigest: digest, changes,
   }
   const updates = changes.map(({ sourceId, revision, baseRevision, snapshot, added, updated, removed }) =>
     ({ sourceId, revision, baseRevision, ...(snapshot !== undefined ? { snapshot } : { added, updated, removed }) }))

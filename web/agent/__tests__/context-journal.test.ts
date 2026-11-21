@@ -5,8 +5,8 @@ import type { Message } from '@/agent/message-types'
 const skills = (count: number): ContextObservation[] => [{
   sourceId: 'skills', entries: Object.fromEntries(Array.from({ length: count }, (_, i) => [`skill-${i}`, `Description ${i}`])),
 }]
-const commit = (history: Message[], observations = skills(12), reset = false) => {
-  const message = reconcileContext(history, observations, 'envelope', reset)
+const commit = (history: Message[], observations = skills(12), reset = false, envelope = 'envelope') => {
+  const message = reconcileContext(history, observations, envelope, reset)
   if (message) history.push(message)
   return message
 }
@@ -120,6 +120,16 @@ describe('context journal', () => {
     // Real request changes still rebase.
     expect(requestEnvelope({ ...base, model: 'other' })).not.toBe(requestEnvelope(base))
     expect(requestEnvelope({ ...base, tools: [...base.tools, { name: 'write' }] })).not.toBe(requestEnvelope(base))
+  })
+
+  it('stores a digest of the envelope, never the envelope', () => {
+    const history: Message[] = []
+    const big = JSON.stringify({ system: 'x'.repeat(50_000), tools: [{ name: 'read' }] })
+    commit(history, skills(12), false, big)
+    const stored = history[0].contextCommit!
+    expect(Object.hasOwn(stored, 'envelope')).toBe(false)
+    expect(stored.envelopeDigest).toHaveLength(16)
+    expect(JSON.stringify(stored).length).toBeLessThan(2_000)
   })
 
   it('rejects duplicate source registration', async () => {
