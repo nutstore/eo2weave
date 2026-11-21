@@ -116,6 +116,10 @@ export const conversation = {
           label: "Compact",
           description: "Compact the conversation context while keeping key information",
         },
+        clear: {
+            label: "Clear conversation",
+            description: "Clear every message and the context of this conversation",
+        },
         summary: {
           label: "Summarize",
           description: "Summarize the page or selection into key points",
@@ -196,6 +200,8 @@ export const conversation = {
       workspaceSetupTimeout: "Preparing the workspace timed out — the run was stopped. Try again.",
       deletedTurn: "Deleted complete conversation turn",
       stopBeforeSend: "This conversation is running. Stop it before sending a new message.",
+      conversationCleared: "Conversation cleared",
+      clearFailed: "Failed to clear the conversation",
       stopBeforeRegenerate: "Please stop the current run before regenerating.",
       conversationMissingForRegenerate: "Conversation not found. Cannot regenerate.",
       targetMessageMissing: "Target message not found. It may have been deleted.",

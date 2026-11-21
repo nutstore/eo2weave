@@ -337,6 +337,13 @@ export interface ConversationState extends ConversationLoadState {
   /** Compact conversation: generate context summary and stop (no agent loop). */
   compactConversation: (conversationId: string) => Promise<void>
 
+  /**
+   * Clear a conversation in place: every message row and the compressed-context
+   * state, while the conversation itself (title, position, kind) stays. This is
+   * what `/clear` does — unlike `/compact`, nothing survives as a summary.
+   */
+  clearConversation: (conversationId: string) => Promise<void>
+
   // Runtime state actions
   setConversationStatus: (id: string, status: ConversationStatus) => void
   appendStreamingContent: (id: string, delta: string) => void
@@ -1838,6 +1845,58 @@ export const useConversationStoreSQLite = create<ConversationState>()(
     },
 
     // ── Compact conversation ──
+    clearConversation: async (conversationId: string) => {
+      const state = get()
+      if (state.isConversationRunning(conversationId)) {
+        toast.error(i18nText('conversation.toast.stopBeforeCompact', '请等待当前任务完成'))
+        return
+      }
+
+      const conv = state.conversations.find((c) => c.id === conversationId)
+      if (!conv) {
+        toast.error(i18nText('conversation.toast.conversationMissing', '会话不存在'))
+        return
+      }
+
+      // Rows first: if the delete fails, the UI must not claim an empty
+      // conversation that comes back on the next reload.
+      try {
+        await getMessageRepository().deleteByConversation(conversationId)
+      } catch (error) {
+        console.error('[conversation.store] clearConversation: delete failed:', error)
+        toast.error(i18nText('conversation.toast.clearFailed', 'Failed to clear the conversation'))
+        return
+      }
+
+      set((s) => {
+        const c = s.conversations.find((c) => c.id === conversationId)
+        if (!c) return
+        c.messages = []
+        c.compressedContextSummary = null
+        c.compressedContextCutoffTimestamp = null
+        c.compressionConvertCallCount = 0
+        c.compressionLastSummaryConvertCall = Number.NEGATIVE_INFINITY
+        c.collectedAssets = []
+        c.updatedAt = Date.now()
+        bumpTranscriptVersion(conversationId)
+      })
+
+      get().resetConversationState(conversationId)
+      get().clearSuggestedFollowUp(conversationId)
+
+      const cleared = get().conversations.find((c) => c.id === conversationId)
+      if (cleared) {
+        persistConversationMeta(cleared).catch((error) => {
+          console.error('[conversation.store] clearConversation: meta persist failed:', error)
+        })
+      }
+
+      toast.success(i18nText('conversation.toast.conversationCleared', 'Conversation cleared'))
+
+      // A summary that just got cleared must not be re-applied by a title run
+      // that was already in flight.
+    },
+
     compactConversation: async (conversationId: string) => {
       const state = get()
       if (state.isConversationRunning(conversationId)) {

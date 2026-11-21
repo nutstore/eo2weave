@@ -116,6 +116,10 @@ export const conversation = {
           label: "压缩",
           description: "压缩对话上下文，保留关键信息",
         },
+        clear: {
+            label: "清空会话",
+            description: "清空本会话的所有消息与上下文",
+        },
         summary: {
           label: "总结",
           description: "总结内容（/summary 要点文字，或侧边栏总结页面/选中）",
@@ -200,6 +204,8 @@ export const conversation = {
       workspaceSetupTimeout: "工作区准备超时，本次运行已停止，请重试",
       deletedTurn: "已删除完整对话轮次",
       stopBeforeSend: "当前对话正在运行，请先停止后再发送",
+      conversationCleared: "会话已清空",
+      clearFailed: "清空会话失败",
       stopBeforeRegenerate: "请先停止当前运行，再重新生成",
       conversationMissingForRegenerate: "对话不存在，无法重新生成",
       targetMessageMissing: "目标消息不存在，可能已被删除",

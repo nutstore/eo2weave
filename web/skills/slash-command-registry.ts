@@ -206,6 +206,12 @@ export function registerBuiltinSlashCommands(): void {
     description: 'compact',
     source: 'builtin',
   })
+  registerSlashCommand({
+    id: 'clear',
+    label: 'clear',
+    description: 'clear',
+    source: 'builtin',
+  })
   // P0 builtin light-operation pack (summary/translate/explain/polish/titles)
   // — labels are i18n keys resolved by the dropdown at render time.
   import('./builtin-slash-commands').then(({ registerBuiltinCommandPack }) =>

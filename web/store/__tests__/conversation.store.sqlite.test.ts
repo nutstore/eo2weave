@@ -12,6 +12,7 @@ const messageRepoInsertMock = vi.fn(() => Promise.resolve())
 const messageRepoInsertBatchMock = vi.fn((_convId: string, _messages: unknown[]) => Promise.resolve())
 const messageRepoFindMock = vi.fn((_convId: string) => Promise.resolve([] as unknown[]))
 const messageRepoReplaceAllMock = vi.fn(() => Promise.resolve())
+const messageRepoDeleteByConversationMock = vi.fn((_convId: string) => Promise.resolve())
 const toastErrorMock = vi.fn()
 const ensureWorkspaceMock = vi.fn(() => Promise.resolve())
 
@@ -107,6 +108,7 @@ vi.mock('@/sqlite', () => ({
     insert: messageRepoInsertMock,
     insertBatch: messageRepoInsertBatchMock,
     replaceAll: messageRepoReplaceAllMock,
+    deleteByConversation: messageRepoDeleteByConversationMock,
     migrateFromJsonBlob: vi.fn(() => Promise.resolve({ conversations: 0, messages: 0 })),
     recoverFromAppSessions: vi.fn(() =>
       Promise.resolve({ sessions: 0, conversations: 0, messages: 0 })
@@ -2059,6 +2061,70 @@ describe('conversation.store.sqlite tool-call routing', () => {
       settings.hasApiKey = true
       credentialRegistry.reset()
     }
+  })
+
+  describe('/clear', () => {
+    it('drops every message row and the compressed-context state, keeping the conversation', async () => {
+      const conv = useConversationStore.getState().createNew('clear-in-place', { activate: false })
+      useConversationStore.getState().addMessage(conv.id, createUserMessage('first task'))
+      useConversationStore.getState().addMessage(conv.id, createAssistantMessage('done'))
+      useConversationStore.setState((state) => {
+        const c = state.conversations.find((c) => c.id === conv.id)!
+        c.compressedContextSummary = 'old summary'
+        c.compressedContextCutoffTimestamp = 1_700_000_000_000
+        c.compressionConvertCallCount = 4
+        c.compressionLastSummaryConvertCall = 3
+        c.collectedAssets = [{ id: 'asset-1' } as never]
+      })
+      const titleBefore = useConversationStore.getState().conversations.find((c) => c.id === conv.id)!.title
+
+      await useConversationStore.getState().clearConversation(conv.id)
+
+      const cleared = useConversationStore.getState().conversations.find((c) => c.id === conv.id)
+      // The conversation survives — only its contents are gone.
+      expect(cleared).toBeDefined()
+      expect(cleared!.title).toBe(titleBefore)
+      expect(cleared!.messages).toEqual([])
+      expect(cleared!.compressedContextSummary).toBeNull()
+      expect(cleared!.compressedContextCutoffTimestamp).toBeNull()
+      expect(cleared!.compressionConvertCallCount).toBe(0)
+      expect(cleared!.collectedAssets).toEqual([])
+      // SQLite is the source of truth on reload, so the rows go first.
+      expect(messageRepoDeleteByConversationMock).toHaveBeenCalledWith(conv.id)
+      expect(cleared!.updatedAt).toBeGreaterThanOrEqual(conv.createdAt)
+    })
+
+    it('refuses to clear while the conversation is running', async () => {
+      const conv = useConversationStore.getState().createNew('clear-running', { activate: false })
+      useConversationStore.getState().addMessage(conv.id, createUserMessage('task'))
+      useConversationStore.setState((state) => {
+        const c = state.conversations.find((c) => c.id === conv.id)!
+        c.status = 'streaming'
+      })
+      messageRepoDeleteByConversationMock.mockClear()
+
+      await useConversationStore.getState().clearConversation(conv.id)
+
+      const after = useConversationStore.getState().conversations.find((c) => c.id === conv.id)!
+      expect(after.messages).toHaveLength(1)
+      expect(messageRepoDeleteByConversationMock).not.toHaveBeenCalled()
+      expect(toastErrorMock).toHaveBeenCalled()
+    })
+
+    it('keeps the messages when the delete fails', async () => {
+      const conv = useConversationStore.getState().createNew('clear-failure', { activate: false })
+      useConversationStore.getState().addMessage(conv.id, createUserMessage('task'))
+      messageRepoDeleteByConversationMock.mockRejectedValueOnce(new Error('db gone'))
+      toastErrorMock.mockClear()
+
+      await useConversationStore.getState().clearConversation(conv.id)
+
+      const after = useConversationStore.getState().conversations.find((c) => c.id === conv.id)!
+      // A failed delete must not leave the UI claiming an empty conversation
+      // that comes back on the next reload.
+      expect(after.messages).toHaveLength(1)
+      expect(toastErrorMock).toHaveBeenCalled()
+    })
   })
 
   it('keeps messages appended while a manual checkpoint is being generated', async () => {

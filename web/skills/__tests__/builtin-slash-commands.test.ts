@@ -127,6 +127,7 @@ describe('matchesBuiltinCommand', () => {
   it('rejects non-builtin or non-command inputs', () => {
     expect(matchesBuiltinCommand('/unknowncmd')).toBe(false)
     expect(matchesBuiltinCommand('/compact')).toBe(false) // legacy, handled separately
+    expect(matchesBuiltinCommand('/clear')).toBe(false) // destructive, handled separately
     expect(matchesBuiltinCommand('hello /summary')).toBe(false)
     expect(matchesBuiltinCommand('')).toBe(false)
     expect(matchesBuiltinCommand('/translate')).toBe(true) // arg optional

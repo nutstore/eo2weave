@@ -712,6 +712,17 @@ export function useConversationLogic() {
   )
 
   const handleSlashCommand = useCallback(async (command: string) => {
+    if (command === 'clear') {
+      let targetConvId = convIdRef.current
+      if (!targetConvId) {
+        const { createNew, setActive } = useConversationStore.getState()
+        const conv = createNew('/clear')
+        targetConvId = conv.id
+        await setActive(targetConvId)
+      }
+      await useConversationStore.getState().clearConversation(targetConvId)
+      return
+    }
     if (command === 'compact') {
       let targetConvId = convIdRef.current
       if (!targetConvId) {
@@ -760,6 +771,14 @@ export function useConversationLogic() {
 
     // Slash command execution happens only when user explicitly sends.
     // Clear input BEFORE the async compact to avoid stale text visible during LLM call.
+    if (inputTrimmed === '/clear') {
+      setInput('')
+      setMentionedAgentIds([])
+      setInputResetToken((v) => v + 1)
+      await handleSlashCommand('clear')
+      return
+    }
+
     if (inputTrimmed === '/compact') {
       setInput('')
       setMentionedAgentIds([])
