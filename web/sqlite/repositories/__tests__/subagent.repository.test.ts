@@ -167,5 +167,37 @@ describe('SubagentRepository', () => {
 
     expect(task.subagent_type).toBe('worker')
     expect(task.parentToolCallId).toBe('tool-call-2')
+})
+
+  describe('findMetadataByWorkspaceId', () => {
+    it('never selects the transcripts', async () => {
+      // Hydration only needs labels and status. Selecting `*` pulled 130 MB of
+      // messages_json across an install (one row at 17 MB) and parsed all of it
+      // into strings the tab never read.
+      hoisted.db.queryAll.mockResolvedValueOnce([])
+
+      await new SubagentRepository().findMetadataByWorkspaceId('conv-1')
+
+      const [sql, params] = hoisted.db.queryAll.mock.calls[0] as [string, unknown[]]
+      expect(sql).not.toContain('*')
+      expect(sql).toContain("'[]' AS messages_json")
+      expect(sql).not.toMatch(/,\s*messages_json/)
+      expect(params).toEqual(['conv-1'])
+    })
+
+    it('still maps a row back with an empty transcript', async () => {
+      hoisted.db.queryAll.mockResolvedValueOnce([{
+        execution_json: null, agent_id: 'a1', workspace_id: 'conv-1', name: 'n', description: 'd',
+        status: 'completed', mode: 'act', subagent_type: 'explorer', parent_tool_call_id: null,
+        timeout_ms: null, messages_json: '[]', queue_json: '[]', usage_json: null, error_json: null,
+        stopped: 0, created_at: 1, updated_at: 2, last_activity_at: 2,
+      }])
+
+      const [task] = await new SubagentRepository().findMetadataByWorkspaceId('conv-1')
+
+      expect(task.agentId).toBe('a1')
+      expect(task.description).toBe('d')
+      expect(task.messages).toEqual([])
+    })
   })
 })

@@ -81,6 +81,28 @@ export class SubagentRepository {
   }
 
   /**
+   * Every task of a conversation, WITHOUT the transcripts.
+   *
+   * `findByWorkspaceId` selects `*`, which pulls `messages_json` for every task —
+   * 130 MB across this install, with one row at 17 MB. Hydration at startup only
+   * needs the labels and the status badge, so reading the transcripts there parsed
+   * the whole history into strings the tab never used.
+   */
+  async findMetadataByWorkspaceId(workspaceId: string): Promise<StoredSubagentTask[]> {
+    const db = getSQLiteDB()
+    const rows = await db.queryAll<SubagentTaskRow>(
+      `SELECT execution_json, agent_id, workspace_id, name, description, status, mode,
+              subagent_type, parent_tool_call_id, timeout_ms, '[]' AS messages_json,
+              queue_json, usage_json, error_json, stopped, created_at, updated_at, last_activity_at
+         FROM subagent_tasks
+        WHERE workspace_id = ?
+        ORDER BY updated_at DESC`,
+      [workspaceId]
+    )
+    return rows.map((row) => this.rowToTask(row))
+  }
+
+  /**
    * One task, for opening a single transcript.
    *
    * Exists so a panel does not have to parse every transcript of the conversation

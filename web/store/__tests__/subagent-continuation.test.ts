@@ -3,12 +3,13 @@ import { useSubagentTaskStore, type SubagentTaskProjection } from '../subagent-t
 const fixture = vi.hoisted(() => ({
   suppressAgent: vi.fn(async () => {}),
   findCompletion: vi.fn(async () => ({ status: 'suppressed' })),
+  listProcessing: vi.fn(async () => []),
   workspace: { refreshPendingChanges: vi.fn(async () => ({ changes: [{ path: 'child.md' }] })) },
   getWorkspace: vi.fn(),
   visibleRefresh: vi.fn(async () => {}),
   context: { activeWorkspaceId: 'other', workspaces: [{ id: 'original', pendingCount: 0 }] },
 }))
-vi.mock('@/sqlite/repositories/subagent-completion.repository', () => ({ getSubagentCompletionRepository: () => ({ suppressAgent: fixture.suppressAgent, find: fixture.findCompletion }) }))
+vi.mock('@/sqlite/repositories/subagent-completion.repository', () => ({ getSubagentCompletionRepository: () => ({ suppressAgent: fixture.suppressAgent, find: fixture.findCompletion, listProcessing: fixture.listProcessing }) }))
 vi.mock('@/opfs', () => ({
   getWorkspaceManager: async () => ({ getWorkspace: fixture.getWorkspace }),
 }))
@@ -108,7 +109,7 @@ describe('hydration keeps transcripts out of memory', () => {
     const { recoverSubagentContinuations } = await import('../subagent-continuation')
     const { getSubagentRepository } = await import('@/sqlite/repositories/subagent.repository')
     const repository = await getSubagentRepository()
-    vi.spyOn(repository, 'findByWorkspaceId').mockResolvedValue([{
+    vi.spyOn(repository, 'findMetadataByWorkspaceId').mockResolvedValue([{
       agentId: 'historic',
       workspaceId: 'conv-hydrate',
       name: 'historic',
