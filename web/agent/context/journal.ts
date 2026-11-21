@@ -1,4 +1,7 @@
 import { generateId, type Message } from '@/agent/message-types'
+import { envelopeDigest } from '@/agent/context/envelope-digest'
+
+export { envelopeDigest }
 
 /** Model-visible entries. A scalar source uses a single stable key (e.g. "value"). */
 export type ContextEntries = Record<string, string>
@@ -38,17 +41,6 @@ export interface ContextCommit {
    */
   envelopeDigest: string
   changes: ContextChange[]
-}
-
-/** Deterministic 64-bit FNV-1a, hex. Equality only — never a security boundary. */
-export function envelopeDigest(envelope: string): string {
-  let hash = 0xcbf29ce484222325n
-  const prime = 0x100000001b3n
-  const mask = 0xffffffffffffffffn
-  for (let index = 0; index < envelope.length; index++) {
-    hash = ((hash ^ BigInt(envelope.charCodeAt(index))) * prime) & mask
-  }
-  return hash.toString(16).padStart(16, '0')
 }
 
 export function canonicalEntries(entries: ContextEntries): ContextEntries {
