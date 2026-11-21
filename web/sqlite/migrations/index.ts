@@ -74,21 +74,19 @@ function repairConversationCompressionColumns(db: any): void {
 }
 
 /**
- * Synchronous read of PRAGMA user_version (the async getCurrentVersion helper
- * is unavailable inside the synchronous repair functions).
+ * Read PRAGMA user_version synchronously for both migrations and startup repairs.
+ * sqlite-wasm returns the DB handle unless result rows are explicitly requested.
  */
 function readUserVersion(db: any): number {
-  try {
-    const result = db.exec('PRAGMA user_version')
-    const versionFromValues = result?.[0]?.values?.[0]?.[0]
-    if (typeof versionFromValues === 'number') return versionFromValues
-
-    const versionFromArray = result?.[0]?.[0]
-    if (typeof versionFromArray === 'number') return versionFromArray
-  } catch {
-    // Treat unreadable version as 0 so repair functions still raise the floor.
+  const rows = db.exec('PRAGMA user_version', {
+    returnValue: 'resultRows',
+    rowMode: 'array',
+  })
+  const version = rows?.[0]?.[0]
+  if (typeof version !== 'number') {
+    throw new Error('Unable to read SQLite user_version')
   }
-  return 0
+  return version
 }
 
 /**
@@ -101,7 +99,8 @@ function readUserVersion(db: any): number {
  * "duplicate column name" conflict on every startup.
  */
 function bumpUserVersionFloor(db: any, version: number): void {
-  if (readUserVersion(db) < version) {
+  const current = readUserVersion(db)
+  if (current < version) {
     db.exec(`PRAGMA user_version = ${version}`)
   }
 }
@@ -641,32 +640,7 @@ export const LATEST_SCHEMA_VERSION = migrations.at(-1)?.version ?? BASE_SCHEMA_V
  * Get current database version from PRAGMA user_version
  */
 export async function getCurrentVersion(db: any): Promise<number> {
-  try {
-    const result = db.exec('PRAGMA user_version')
-    // sqlite-wasm result shape may vary by build:
-    // - [{ columns, values }]
-    // - [[version]]
-    const versionFromValues = result?.[0]?.values?.[0]?.[0]
-    if (typeof versionFromValues === 'number') return versionFromValues
-
-    const versionFromArray = result?.[0]?.[0]
-    if (typeof versionFromArray === 'number') return versionFromArray
-
-    // Fallback: use prepared statement API.
-    const stmt = db.prepare('PRAGMA user_version')
-    try {
-      if (stmt.step()) {
-        const row = stmt.get({}) as { user_version?: number }
-        if (typeof row?.user_version === 'number') return row.user_version
-      }
-    } finally {
-      stmt.finalize()
-    }
-
-    return 0
-  } catch {
-    return 0
-  }
+  return readUserVersion(db)
 }
 
 /**
