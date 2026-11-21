@@ -123,7 +123,11 @@ export async function recoverSubagentContinuations(conversationIds: string[]): P
         acknowledged: task.execution?.acknowledged,
         deliveryError: completion?.deliveryError,
         deliveryPhase: completion?.status,
-        messages: task.messages,
+        // Metadata only. A hydrated transcript used to land here in full, so a
+        // long conversation kept every past member's messages (with their tool
+        // results) alive in the store for the lifetime of the tab. The panel
+        // reads the transcript from SQLite when it is actually opened.
+        messages: [],
       })
     }
     if (tasks.length) knownConversations.add(id)

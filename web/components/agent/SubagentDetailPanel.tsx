@@ -186,16 +186,19 @@ export const SubagentDetailPanel = memo(function SubagentDetailPanel({
   const [isLoadingPersisted, setIsLoadingPersisted] = useState(false)
 
   useEffect(() => {
-    if (draft || projection || !conversationId) return
+    // A hydrated projection carries metadata only, so an empty transcript means
+    // "not loaded yet" rather than "no messages".
+    const hasTranscript = !!projection?.messages.length
+    if (draft || !conversationId || (projection && hasTranscript)) return
     setPersistedMessages(null)
 
     let cancelled = false
     setIsLoadingPersisted(true)
     void getSubagentRepository()
-      .findByWorkspaceId(conversationId)
-      .then((tasks) => {
+      .findByAgentId(conversationId, agentId)
+      .then((task) => {
         if (!cancelled) {
-          setPersistedMessages(tasks.find((task) => task.agentId === agentId)?.messages ?? [])
+          setPersistedMessages(task?.messages ?? [])
         }
       })
       .catch(() => {
@@ -209,7 +212,12 @@ export const SubagentDetailPanel = memo(function SubagentDetailPanel({
   }, [agentId, conversationId, draft, projection])
 
   const persisted = useMemo(
-    () => buildPersistedSteps(projection?.messages ?? persistedMessages ?? []),
+    () => {
+      // `[]` is truthy, so the live transcript has to be checked by length: an
+      // empty projection means the transcript lives in SQLite, not in memory.
+      const live = projection?.messages
+      return buildPersistedSteps(live?.length ? live : persistedMessages ?? [])
+    },
     [projection?.messages, persistedMessages]
   )
 

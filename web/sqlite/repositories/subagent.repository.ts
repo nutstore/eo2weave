@@ -80,6 +80,25 @@ export class SubagentRepository {
     return rows.map((row) => this.rowToTask(row))
   }
 
+  /**
+   * One task, for opening a single transcript.
+   *
+   * Exists so a panel does not have to parse every transcript of the conversation
+   * to show one: `findByWorkspaceId` JSON-parses all of them, which on a long
+   * conversation is the largest single allocation the UI makes.
+   */
+  async findByAgentId(workspaceId: string, agentId: string): Promise<StoredSubagentTask | null> {
+    const db = getSQLiteDB()
+    const row = await db.queryFirst<SubagentTaskRow>(
+      `SELECT *
+         FROM subagent_tasks
+        WHERE workspace_id = ?
+          AND agent_id = ?`,
+      [workspaceId, agentId]
+    )
+    return row ? this.rowToTask(row) : null
+  }
+
   /** Acknowledge a single attempt without changing execution or result delivery. */
   async acknowledge(workspaceId: string, agentId: string, executionId: string): Promise<void> {
     const db = getSQLiteDB()
