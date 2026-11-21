@@ -150,6 +150,43 @@
 - [ ] **P6-2** 协作图用 `handoff_json` 画真实边
 - [ ] **P6-3** per-member 成本汇总
 
+### M1 内存与存储治理（2026-11-21，实战）
+
+> 触发：巍巍报“好像有内存溢出的情况”。结论先放最前：**标签页崩的是开发构建，不是应用数据**；应用侧另有四处真浪费，已修。
+
+- [x] **M1-1** 请求 envelope 只存摘要 → `agent/context/envelope-digest.ts`（FNV-1a 64）+ `journal.ts` 的 `ContextCommit.envelopeDigest` / `requestEnvelope()`；逐轮 meta **98,238 → 2,844 字节（35×）**，envelope 本体 **90,670 → 16 字节（5,600×）**（稳态 epoch `1795261040634-29s1t46`）。**D15**：systemPrompt 不再属于 envelope（改提示词不该让 journal 失效）
+- [x] **M1-2** 存量清理（`sqlite/migrations/index.ts` v25，纯 SQL `json_remove`）→ 带 envelope 的行 **321 → 0**；全库消息文本 **313,912,737 → 283,912,737 字符（-30.0 MB）**；`context_update` 批 **42.0 MB → 11.7 MB**。数字更正：41.9MB 是那 321 行的总 payload，envelope 部分按行均值算 ≈29MB，与原提交信息写的“删掉 41.9MB”不符，已 amend 修正
+- [x] **M1-3** `user_version` 永不倒退 → `readUserVersion()` 读失败返回 `null`（不是 0），恢复基线走 `bumpUserVersionFloor()` 只抬地板不赋值（**D19**）
+- [x] **M1-4** hydration 只读元数据列 → `subagent.repository.ts` 新增 `findMetadataByWorkspaceId`（显式列 + `'[]' AS messages_json`），`subagent-continuation.ts` 改用（**D18**）
+- [x] **M1-5** 终态成员丢弃内存 transcript → `runtime.publishTask` 在 `finished && transcriptPersisted && !stopped` 时发空数组；库是唯一副本（**含复活自 SQLite 的任务**）；**生产堆里 store 那一行从 67.7MB(48%) 消失**（**D14 后续**）
+- [x] **M1-6** 子代理 transcript 递归深度封顶 → `components/agent/subagent-depth.ts`（`MAX_SUBAGENT_DEPTH = 2`），**在 row 层拒绝，不 mount panel**（**D20**）
+- [x] **M1-7** 团队“一张卡”真机验收（**D11** 兑现）→ 一个 `run_code` + `Promise.all([agent(...)])`：DOM 实测 `teamCards: ["· 2 agent"]` / `memberRowsFound: 2`，一卡两行；卡头是脚本 purpose，行内 `d1 已完成`。**卡数 = `run_code` 调用数，与成员数无关**。注：P6-1 的 UI 归组因此降为可选（提示词侧已达成），仍留在 P6
+- [x] **M1-8** dev 堆测量手段（不当作修复）→ `next.config.mjs` 新增 `CW_WEBPACK_DEVTOOL`：`false` / `source-map` / 不设。dev 默认 `eval-source-map` 把每个模块源码 + base64 sourcemap 常驻为可 eval 字符串：**794 MB / 954 MB 总额，生产仅 91.7 MB**。生产构建不受影响
+
+**诊断口径（三次跑偏后的正确做法）**
+
+| 测法 | 覆盖 ExternalString | 结论 |
+|---|---|---|
+| `performance.memory` | ❌ | 837→693MB 与目标无关，**不可用于这类判断** |
+| `measureUserAgentSpecificMemory()` | ✅ | 本环境 25s 无响应，**不可用** |
+| DevTools 堆快照 | ✅ | 唯一可用；须区分 dev / 生产两个 origin 的两份 OPFS |
+
+**生产堆基线（`localhost:5173`，prod build）**
+
+| 时间 | 总量 | 最大项 |
+|---|---:|---|
+| 改前 | 140 MB | `{agentId, conversationId, parentToolCallId…}` **67.7 MB (48%)** |
+| 改后 | **91.7 MB** | `(string)` 51.6 MB (56%)、`ExternalStringData` 28.3 MB、`{version, epoch, sequence, changes}` 4.4 MB |
+
+**已决定不做**
+
+- **D17 撤回“工具结果懒加载”**：117MB 是**全库累计**，内存里只驻留当前会话（2.4–10MB 级）；且工具结果正文本身是模型上下文，不能从内存裁掉。分布证据：`<4KB` 25,865 条/31.6MB，`>256KB` 20 条/18.8MB
+- **`meta.calls` 不动**：`MESSAGE_META_FIELDS` 白名单不含 `calls`，970 条 tool 消息 0 条含原文；而脚本内 `tools.*` 调用**不会变成对话消息**，`calls` 是唯一痕迹（`RunCodeRenderer.tsx:293` 渲染可展开详情）
+- **`fs_snapshot_files` 79MB 不动**（undo/redo 属功能数据）；**`storage/init.ts:576` 的 `SELECT *` 不动**（仅手动导出路径）
+- **待定 · A2**：`hydrateFromSQLite` 仍把全部任务（含 transcript）留到运行时销毁（生产堆里 `SubagentRuntimeImpl` 30MB）。不能照搬 M1-5，因为 `resume({agentId})` 要从历史续跑；可选做法是“只 hydrate 元数据 + resume 时取那一条”。未做，等拍板
+
+**测试/类型**：`sqlite/migrations` 21 + `agent/subagent` 127 + `components/agent` 45 + `context` 28 全绿（末次复跑 126）；`pnpm exec tsc --noEmit` exit 0。本轮踩坑：`edit` 会吞换行、`vi.fn()` 内抛错必判失败、`beforeEach(() => mock.mockReset())` 是 teardown 陷阱。
+
 ### 已决定不做（不要再提出）
 
 | 项 | 决定 | 日期 |
