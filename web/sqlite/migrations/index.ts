@@ -1,6 +1,4 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { envelopeDigest } from '@/agent/context/envelope-digest'
-
 /**
  * SQLite Migration System
  *
@@ -106,60 +104,6 @@ function bumpUserVersionFloor(db: any, version: number): void {
   if (readUserVersion(db) < version) {
     db.exec(`PRAGMA user_version = ${version}`)
   }
-}
-
-/**
- * v25: context commits stored the request envelope verbatim — provider, model and
- * the entire tool list, plus the system prompt before that was dropped. Across one
- * install: 324 commits carrying 42.0 MB, of which 41.9 MB (99.8%) was envelope
- * text, re-stored identically on every turn that changed any source.
- *
- * The journal only compares envelopes for equality, so keep the digest and drop
- * the text. Digesting the stored string (rather than recomputing an envelope we no
- * longer have) preserves each epoch boundary exactly as it was recorded.
- */
-export function digestContextCommitEnvelopes(db: any, version = 25): void {
-  let rows: any[] = []
-  try {
-    rows = db.exec(
-      `SELECT id, meta_json FROM messages
-        WHERE meta_json LIKE '%"contextCommit"%' AND meta_json LIKE '%"envelope"%'`,
-    )?.[0]?.values ?? []
-  } catch {
-    // A database without a messages table has nothing to compact.
-    rows = []
-  }
-
-  if (rows.length === 0) {
-    bumpUserVersionFloor(db, version)
-    return
-  }
-
-  const update = db.prepare('UPDATE messages SET meta_json = ? WHERE id = ?')
-  try {
-    for (const row of rows) {
-      const [id, metaJson] = row as [string, string]
-      let meta: any
-      try {
-        meta = JSON.parse(metaJson)
-      } catch {
-        continue
-      }
-      const commit = meta?.contextCommit
-      if (!commit || typeof commit.envelope !== 'string') continue
-      const next = {
-        ...meta,
-        contextCommit: { ...commit, envelopeDigest: envelopeDigest(commit.envelope) },
-      }
-      delete next.contextCommit.envelope
-      update.bind([JSON.stringify(next), id])
-      update.step()
-      update.reset()
-    }
-  } finally {
-    update.finalize()
-  }
-  bumpUserVersionFloor(db, version)
 }
 
 /**
@@ -666,7 +610,24 @@ export const migrations: Migration[] = [
   { version: 22, name: 'add_async_subagent_executions', up: repairSubagentExecutions },
   { version: 23, name: 'add_workflow_script_tables', up: (db) => repairWorkflowScriptTables(db, 23) },
   { version: 24, name: 'add_workflow_step_identity_columns', up: (db) => repairWorkflowScriptTables(db, 24) },
-  { version: 25, name: 'digest_context_commit_envelopes', up: digestContextCommitEnvelopes },
+  {
+    version: 25,
+    name: 'strip_context_commit_envelopes',
+    // 321 commits across one install carried envelopes averaging 90.6 KB — about
+    // 29 MB of text, roughly 70% of what those rows stored, re-written on every turn
+    // that changed any source. Only equality was ever needed, and the runtime now
+    // keeps a 16-char digest, so the stored text can go. Rows compacted here keep no
+    // digest, which costs each conversation one rebased epoch (one snapshot, then
+    // deltas again); a conversation whose latest commit already has a digest does
+    // not rebase at all.
+    up: `
+      UPDATE messages
+         SET meta_json = json_remove(meta_json, '$.contextCommit.envelope')
+       WHERE json_extract(meta_json, '$.contextCommit.envelope') IS NOT NULL;
+
+      PRAGMA user_version = 25;
+    `,
+  },
 ]
 
 /** Highest migration in the registry — where an up-to-date database ends. */
