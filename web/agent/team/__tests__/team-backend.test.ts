@@ -7,8 +7,11 @@ import { TeamBackend } from '../team-backend'
 
 const { getTeamDir } = vi.hoisted(() => ({ getTeamDir: vi.fn() }))
 
+// Boards live in the conversation's workspace now: the resolver asks the
+// workspace runtime for `team/`, not the project manager.
 vi.mock('@/opfs', () => ({
-  ProjectManager: { create: async () => ({ getTeamDir }) },
+  ProjectManager: { create: async () => ({}) },
+  getWorkspaceManager: async () => ({ getWorkspace: async () => ({ getTeamDir }) }),
 }))
 vi.mock('@/store/opfs.store', () => ({
   useOPFSStore: { getState: () => ({ getPendingChanges: () => [] }) },
@@ -55,6 +58,7 @@ const runKey = 'conv-1-turn-1'
 const context: ToolContext = {
   directoryHandle: null,
   projectId: 'project-1',
+  workspaceId: 'conv-1',
   currentAgentId: 'member-a',
   teamRunKey: runKey,
   isSubagent: true,

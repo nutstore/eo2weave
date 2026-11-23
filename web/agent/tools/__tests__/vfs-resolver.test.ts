@@ -2,20 +2,23 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ToolContext } from '../tool-types'
 import { isProtectedAgentCoreFile, resolveVfsTarget } from '../vfs-resolver'
 
-const { getProjectMock, getTeamDirMock, createProjectManagerMock, activeAgentState } = vi.hoisted(() => {
+const { getProjectMock, getWorkspaceMock, createProjectManagerMock, getWorkspaceManagerMock, activeAgentState } = vi.hoisted(() => {
   const getProjectMockInner = vi.fn()
-  const getTeamDirMockInner = vi.fn()
+  const getWorkspaceMockInner = vi.fn()
   const createProjectManagerMockInner = vi.fn(async () => ({
     getProject: getProjectMockInner,
-    getTeamDir: getTeamDirMockInner,
+  }))
+  const getWorkspaceManagerMockInner = vi.fn(async () => ({
+    getWorkspace: getWorkspaceMockInner,
   }))
   const activeAgentStateInner: { activeAgentId: string | null } = {
     activeAgentId: 'default',
   }
   return {
     getProjectMock: getProjectMockInner,
-    getTeamDirMock: getTeamDirMockInner,
+    getWorkspaceMock: getWorkspaceMockInner,
     createProjectManagerMock: createProjectManagerMockInner,
+    getWorkspaceManagerMock: getWorkspaceManagerMockInner,
     activeAgentState: activeAgentStateInner,
   }
 })
@@ -24,6 +27,7 @@ vi.mock('@/opfs', () => ({
   ProjectManager: {
     create: createProjectManagerMock,
   },
+  getWorkspaceManager: getWorkspaceManagerMock,
 }))
 
 vi.mock('@/store/agents.store', () => ({
@@ -36,6 +40,7 @@ function makeContext(overrides?: Partial<ToolContext>): ToolContext {
   return {
     directoryHandle: null,
     projectId: 'project-1',
+    workspaceId: 'conv-1',
     currentAgentId: 'default',
     ...overrides,
   }
@@ -248,11 +253,26 @@ describe('vfs-resolver team namespace', () => {
 
   function makeTeamProject() {
     const runDir = { name: runKey, kind: 'directory' }
-    getTeamDirMock.mockResolvedValue({
-      getDirectoryHandle: async () => runDir,
-    })
-    return getTeamDirMock
+    // The board now lives in the conversation's own workspace
+    // (`workspaces/{conversationId}/team/{runKey}`), so the workspace runtime —
+    // not the project manager — hands out the directory.
+    const getTeamDir = vi.fn(async () => ({ getDirectoryHandle: async () => runDir }))
+    getWorkspaceMock.mockResolvedValue({ getTeamDir })
+    return getTeamDir
   }
+
+  it('resolves the board from the executing conversation workspace', async () => {
+    makeTeamProject()
+    await resolveVfsTarget(`vfs://team/${runKey}/manifest.json`, makeContext({ teamRunKey: runKey }), 'read')
+    expect(getWorkspaceMock).toHaveBeenCalledWith('conv-1')
+  })
+
+  it('reports the board missing when the conversation has no workspace', async () => {
+    getWorkspaceMock.mockResolvedValue(null)
+    await expect(
+      resolveVfsTarget(`vfs://team/${runKey}/manifest.json`, makeContext({ teamRunKey: runKey }), 'read')
+    ).rejects.toThrow('Team board not found')
+  })
 
   beforeEach(() => {
     vi.clearAllMocks()
@@ -289,7 +309,7 @@ describe('vfs-resolver team namespace', () => {
       expect(result.backend.label).toBe('team')
     }
     // A write may create the board; the directory is resolved with create.
-    expect(getTeamDir).toHaveBeenCalledWith('project-1', { create: true })
+    expect(getTeamDir).toHaveBeenCalledWith({ create: true })
   })
 
   it('refuses a member writing another actor directory or a reserved file', async () => {
@@ -316,6 +336,6 @@ describe('vfs-resolver team namespace', () => {
   it('never creates the board on read', async () => {
     const getTeamDir = makeTeamProject()
     await resolveVfsTarget(`vfs://team/${runKey}/by/member-a/notes.md`, makeContext({ teamRunKey: runKey }), 'read')
-    expect(getTeamDir).toHaveBeenCalledWith('project-1', { create: false })
+    expect(getTeamDir).toHaveBeenCalledWith({ create: false })
   })
 })

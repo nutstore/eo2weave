@@ -20,6 +20,15 @@ import type { WorkspacePendingManager } from './workspace-pending'
 const FILES_DIR = 'files'
 const BASELINE_DIR = '.baseline'
 const ASSETS_DIR = 'assets'
+/**
+ * Team board scratch, owned by the workspace (one conversation = one workspace).
+ *
+ * A sibling of `files/` and `assets/` rather than under either: a board must not
+ * enter `files/` (that is the user's folder, with pending/sync/conflict tracking)
+ * and must not enter `assets/` (that is user uploads, mounted at /mnt_assets).
+ * Living here means the boards of a conversation are deleted with it.
+ */
+const TEAM_DIR = 'team'
 
 /**
  * Compare two Uint8Arrays for equality using 4-byte (Uint32) chunks.
@@ -86,6 +95,7 @@ export interface WorkspaceFilesDirInternals {
   calculateDirStats(dir: FileSystemDirectoryHandle): Promise<{ size: number; fileCount: number }>
   getFilesDir(): Promise<FileSystemDirectoryHandle>
   getAssetsDir(): Promise<FileSystemDirectoryHandle>
+  getTeamDir(options?: { create?: boolean }): Promise<FileSystemDirectoryHandle>
   getBaselineDir(): Promise<FileSystemDirectoryHandle>
 }
 
@@ -606,6 +616,19 @@ export async function getFilesDirImpl(rt: WorkspaceFilesDirInternals): Promise<F
  */
 export async function getAssetsDirImpl(rt: WorkspaceFilesDirInternals): Promise<FileSystemDirectoryHandle> {
   return await rt.workspaceDir.getDirectoryHandle(ASSETS_DIR, { create: true })
+}
+
+/**
+ * Get the team/ directory handle — scratch for this conversation's team runs.
+ *
+ * `create` defaults to false: reading a board must not bring one into existence,
+ * otherwise "which runs exist" becomes unknowable. Writers pass `create: true`.
+ */
+export async function getTeamDirImpl(
+  rt: WorkspaceFilesDirInternals,
+  options?: { create?: boolean },
+): Promise<FileSystemDirectoryHandle> {
+  return await rt.workspaceDir.getDirectoryHandle(TEAM_DIR, { create: options?.create ?? false })
 }
 
 /**

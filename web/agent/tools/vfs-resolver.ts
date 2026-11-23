@@ -1,4 +1,4 @@
-import { ProjectManager, type AgentManager } from '@/opfs'
+import { ProjectManager, getWorkspaceManager, type AgentManager } from '@/opfs'
 import { useAgentsStore } from '@/store/agents.store'
 import type { ToolContext } from './tool-types'
 import type { VfsBackend } from './vfs-backend'
@@ -280,14 +280,22 @@ export async function resolveVfsTarget(
       throw new Error(`PERMISSION_DENIED: ${access.reason}`)
     }
 
-    const teamManager = await getProjectManager()
-    // Reading never creates a board: a run that has not written must look
-    // missing, otherwise the set of existing runs becomes unknowable.
+    // A board belongs to the conversation that minted the run key, not to the
+    // project: one conversation = one workspace, so `workspaces/{id}/team/{runKey}`
+    // is the board, and deleting the conversation takes the boards with it. The
+    // path stays outside `files/` (the user's folder, with pending/sync tracking)
+    // and outside `assets/` (user uploads, mounted at /mnt_assets).
+    const conversationId = context.workspaceId
     const isRead = op === 'read'
-    const teamDir = await teamManager.getTeamDir(teamProjectId, { create: !isRead })
-    if (!teamDir) throw new Error(`Team board not found for run "${runKey}"`)
     let runDir: FileSystemDirectoryHandle
     try {
+      const workspace = conversationId
+        ? await (await getWorkspaceManager()).getWorkspace(conversationId)
+        : null
+      if (!workspace) throw new Error('no workspace for this run')
+      // Reading never creates a board: a run that has not written must look
+      // missing, otherwise the set of existing runs becomes unknowable.
+      const teamDir = await workspace.getTeamDir({ create: !isRead })
       runDir = await teamDir.getDirectoryHandle(runKey, { create: !isRead })
     } catch {
       throw new Error(`Team board not found for run "${runKey}"`)

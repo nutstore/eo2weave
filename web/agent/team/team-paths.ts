@@ -1,10 +1,14 @@
 /**
  * Team board paths — the `vfs://team/` namespace.
  *
- * Physical location: `{projectDir}/team/{runKey}/`. That is a sibling of
- * `agents/`, deliberately outside every workspace root, so the board never
- * enters git, never enters the sync-to-disk review queue, and never shows up in
- * a project `ls`.
+ * Physical location: `{projectDir}/workspaces/{conversationId}/team/{runKey}/`.
+ *
+ * The board belongs to the conversation that minted the run key: one
+ * conversation = one workspace, so deleting the conversation deletes its boards,
+ * and a board never outlives the chat that produced it. It is a sibling of
+ * `files/` and `assets/` inside the workspace — outside `files/` so it never
+ * enters git or the sync-to-disk review queue, outside `assets/` because those
+ * are user uploads (mounted at /mnt_assets).
  *
  * Layout inside one run:
  *

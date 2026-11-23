@@ -73,7 +73,7 @@ export function createRuntimeContextSources(input: () => InjectEnhancementsInput
         lines.push(
           `- Read anything on it: \`${root}/00-brief.md\` (the goal, if the lead wrote one) and other members' notes under \`${root}/by/\`.`,
           canWrite && slot
-            ? `- Answer in your final message — that is what the lead receives. Put long artifacts instead in \`${root}/${slot}/\`; everything else on the board is read-only.`
+            ? `- Answer in your final message — that is what the lead receives. Put long artifacts instead in \`${root}/${slot}/\`; everything else on the board is read-only. The board belongs to this conversation and is discarded with it, so anything the user must keep has to end up in the workspace.`
             : canWrite
               ? '- You have no write area on this board: return your findings in your final message.'
               : '- You cannot write anything: this execution is read-only.',
@@ -83,7 +83,7 @@ export function createRuntimeContextSources(input: () => InjectEnhancementsInput
           '- A team belongs in **one** `run_code` call: `await Promise.all([agent(p1, { task_id: "t1" }), agent(p2, { task_id: "t2" })])`. Each `agent()` blocks until that member answers, so the script can branch on results, and the whole team renders as one card instead of a trail of steps.',
           '- `spawn_subagent` is for a single fire-and-forget task; for a team, prefer the script above.',
           canWrite
-            ? `- The board under \`${root}/\` maintains itself (task list, ledger, per-member directories). You do not write it — read it only to review what the team did.`
+            ? `- The board under \`${root}/\` maintains itself (task list, ledger, per-member directories). You do not write it — read it only to review what the team did. It belongs to this conversation (deleted with it, newest 20 kept), so anything that must outlive the conversation belongs in the workspace, not here.`
             : '- You cannot write to it: this execution is read-only.',
           '- If the members need one shared statement of the goal, put it in `00-brief.md` once; otherwise each task description is enough.',
         )

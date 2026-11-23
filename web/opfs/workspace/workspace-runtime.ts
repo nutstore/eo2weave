@@ -74,6 +74,7 @@ import {
   calculateDirStatsImpl,
   getFilesDirImpl,
   getAssetsDirImpl,
+  getTeamDirImpl,
   getBaselineDirImpl,
 } from './workspace-files-dir'
 import {
@@ -1587,6 +1588,13 @@ export class WorkspaceRuntime {
    */
   async getAssetsDir(): Promise<FileSystemDirectoryHandle> {
     return getAssetsDirImpl(this as unknown as WorkspaceFilesDirInternals)
+  }
+
+  /**
+   * Get the team/ directory handle — scratch for this conversation's team runs.
+   */
+  async getTeamDir(options?: { create?: boolean }): Promise<FileSystemDirectoryHandle> {
+    return getTeamDirImpl(this as unknown as WorkspaceFilesDirInternals, options)
   }
 
   /**
