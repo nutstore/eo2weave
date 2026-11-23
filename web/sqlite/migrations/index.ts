@@ -622,7 +622,8 @@ export const migrations: Migration[] = [
     up: `
       UPDATE messages
          SET meta_json = json_remove(meta_json, '$.contextCommit.envelope')
-       WHERE json_extract(meta_json, '$.contextCommit.envelope') IS NOT NULL;
+       WHERE json_valid(meta_json)
+         AND json_extract(meta_json, '$.contextCommit.envelope') IS NOT NULL;
 
       PRAGMA user_version = 25;
     `,
