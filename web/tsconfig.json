@@ -13,7 +13,8 @@
         },
         "types": [
             "@types/react",
-            "@types/react-dom"
+            "@types/react-dom",
+            "node"
         ],
         "esModuleInterop": true,
         "allowSyntheticDefaultImports": true,
