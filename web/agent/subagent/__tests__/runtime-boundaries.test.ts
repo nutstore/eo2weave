@@ -45,6 +45,14 @@ const storage = vi.hoisted(() => {
   return { tasks, completions, taskRepo, completionRepo, run: vi.fn(), configs: [] as AgentLoopConfig[], actorClasses: ['write'] as string[], actorReadonly: false }
 })
 
+const teamBoard = vi.hoisted(() => ({
+  readTeamTaskView: vi.fn(async (_context: unknown, _taskId: string) => ({
+    brief: 'board task' as string | null,
+    runGoal: 'board goal' as string | null,
+    error: undefined as string | undefined,
+  })),
+}))
+
 vi.mock('@/sqlite', () => ({
   getSubagentRepository: () => storage.taskRepo,
   getSubagentCompletionRepository: () => storage.completionRepo,
@@ -77,7 +85,9 @@ vi.mock('@/agent/team/team-board', () => ({
   appendTeamLedger: async () => {},
   recordTeamTaskOutcome: vi.fn(async () => {}),
   listTeamSlotFiles: async () => [],
-  buildTeamTaskSection: ({ runKey }: { runKey: string }) => `Pinned board: ${runKey}`,
+  readTeamTaskView: teamBoard.readTeamTaskView,
+  buildTeamTaskSection: ({ runKey, brief }: { runKey: string; brief: string | null }) =>
+    `Pinned board: ${runKey} | brief: ${brief ?? 'none'}`,
 }))
 let answerId = 0
 const answer = (): Message => ({
@@ -208,6 +218,27 @@ describe('subagent execution boundaries', () => {
     expect(config.toolContext.teamTaskId).toBe('t1')
     expect(config.toolContext.teamRunKey).toBe('original-board')
     expect(config.systemPrompt).toContain('Review the diff.')
+  })
+
+  it('re-reads the member task from its own board when resuming after a reload', async () => {
+    const runtime = createRuntime('original-board')
+    const result = await runtime.spawn({
+      description: 'member', prompt: 'inspect', as: 'reviewer', task_id: 't1',
+    })
+    expect(storage.configs[0].systemPrompt).toContain('brief: assigned task')
+
+    // A reload keeps identity but not the board text: the task row carries no
+    // brief, so resume has to read it back before building the prompt.
+    __resetSubagentRuntimeRegistryForTests()
+    const reloaded = createRuntime('next-board')
+    await reloaded.resume({ agentId: result.agentId, prompt: 'continue' })
+    await vi.waitFor(() => expect(storage.configs).toHaveLength(2))
+
+    expect(teamBoard.readTeamTaskView).toHaveBeenCalledWith(
+      expect.objectContaining({ teamRunKey: 'original-board' }),
+      't1',
+    )
+    expect(storage.configs[1].systemPrompt).toContain('brief: board task')
   })
 
   it('records a stopped team member as blocked instead of leaving its task running', async () => {

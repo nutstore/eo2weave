@@ -11,6 +11,7 @@ import {
   listTeamSlotFiles,
   readTeamBrief,
   readTeamManifest,
+  readTeamTaskView,
   recordTeamTaskOutcome,
   teamBoardQueuePolicy,
   teamManifestPath,
@@ -123,6 +124,44 @@ describe('team board reads', () => {
     const goal = await readTeamBrief(context())
     expect(goal?.length).toBe(801)
     expect(goal?.endsWith('…')).toBe(true)
+  })
+})
+
+describe('team board re-read on resume', () => {
+  beforeEach(() => { resolveVfsTargetMock.mockReset() })
+
+  it("renders a member's own task and the run goal", async () => {
+    const manifest = serializeTeamManifest({
+      ...emptyTeamManifest('Ship it'),
+      tasks: [{ id: 't1', goal: 'Inspect the diff', status: 'running' as const }],
+    })
+    resolveVfsTargetMock.mockImplementation(async (rawPath: string) => {
+      const isBrief = rawPath.endsWith('00-brief.md')
+      return {
+        kind: 'team' as const,
+        path: isBrief ? '00-brief.md' : 'manifest.json',
+        backend: {
+          writeFile: vi.fn(async () => undefined),
+          readFile: vi.fn(async () => ({
+            content: isBrief ? 'Ship the board.' : manifest,
+            size: 1,
+            mimeType: 'text/plain',
+          })),
+        },
+      }
+    })
+
+    const view = await readTeamTaskView(context(), 't1')
+    expect(view.brief).toContain('Inspect the diff')
+    expect(view.runGoal).toBe('Ship the board.')
+    expect(view.error).toBeUndefined()
+  })
+
+  it('reports an unreadable board instead of claiming the task was never recorded', async () => {
+    resolveVfsTargetMock.mockResolvedValue(backendWith({ content: '{ broken' }))
+    const view = await readTeamTaskView(context(), 't1')
+    expect(view.brief).toBeNull()
+    expect(view.error).toMatch(/invalid JSON/)
   })
 })
 

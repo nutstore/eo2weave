@@ -28,7 +28,7 @@ import { SubagentError, SubagentErrorCode } from '@/agent/tools/tool-types'
 import type { SubagentTraceMessage } from '@/agent/tools/tool-types'
 import { TranscriptWriter, getTranscriptDir, getTranscriptFile } from './transcript'
 import { buildSubagentSystemPrompt } from './role-prompts'
-import { assignTeamTask, appendTeamLedger, buildTeamTaskSection, listTeamSlotFiles, recordTeamTaskOutcome } from '@/agent/team/team-board'
+import { assignTeamTask, appendTeamLedger, buildTeamTaskSection, listTeamSlotFiles, readTeamTaskView, recordTeamTaskOutcome } from '@/agent/team/team-board'
 import { teamMemberSlot } from '@/agent/team/team-paths'
 import {
   intersectCapabilityClasses,
@@ -807,6 +807,19 @@ class SubagentRuntimeImpl implements SubagentRuntime {
     const prompt = (input.prompt || '').trim()
     if (!prompt) {
       throw new SubagentError(SubagentErrorCode.INVALID_INPUT, 'prompt is required', { field: 'prompt' })
+    }
+    // A member revived from metadata has identity but no board text: the brief
+    // and run goal are prompt material and are never stored. Re-read its own
+    // task once here, so a resumed member sees the task that is on the board
+    // instead of "the lead did not record a task for this spawn".
+    if (task.teamTaskId && task.teamRunKey && !task.teamBrief) {
+      const view = await readTeamTaskView(
+        { ...this.deps.baseToolContext, teamRunKey: task.teamRunKey },
+        task.teamTaskId,
+      )
+      task.teamBrief = view.brief
+      task.teamGoal = view.runGoal
+      if (view.error) task.teamBoardError = view.error
     }
     let transcriptRecovered = 0
     await this.withTaskPersistence(task, async () => {

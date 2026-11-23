@@ -265,6 +265,34 @@ export async function assignTeamTask(
   }
 }
 
+/**
+ * Re-read a member's own task after a reload.
+ *
+ * The board text is prompt material, not stored state, so a task revived from
+ * metadata has no `teamBrief`/`teamGoal` to render. Resume calls this once per
+ * resumed member (a read, under no lock) so the member is not told the lead
+ * never recorded a task that is sitting on the board. A board that cannot be
+ * read returns an error instead of throwing: the resume itself must not fail.
+ */
+export async function readTeamTaskView(
+  context: ToolContext,
+  taskId: string,
+): Promise<{ brief: string | null; runGoal: string | null; error?: string }> {
+  try {
+    const manifest = await readTeamManifest(context)
+    return {
+      brief: manifest ? renderTeamTask(manifest, taskId) : null,
+      runGoal: await readTeamBrief(context),
+    }
+  } catch (error) {
+    return {
+      brief: null,
+      runGoal: null,
+      error: error instanceof Error ? error.message : String(error),
+    }
+  }
+}
+
 export interface TeamTaskOutcomeInput {
   taskId: string
   status: Extract<TeamTaskStatus, 'done' | 'blocked'>
