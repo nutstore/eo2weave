@@ -100,14 +100,25 @@ const nextConfig = {
       process.env.NEXT_PUBLIC_JIANGUOYUN_AI_CLIENT_ID || '',
   },
   webpack(config, { webpack, isServer, dev }) {
-    // `eval-source-map` (Next's dev default) keeps every module's source plus a
-    // base64 source map alive as an evaluatable string for HMR: measured at 794 MB
-    // of a dev tab here, against 28 MB in a production build. Setting this variable
-    // lets a session trade rebuild speed for memory without waiting for a build:
-    //   CW_WEBPACK_DEVTOOL=false pnpm dev        closest to production, no debugging
-    //   CW_WEBPACK_DEVTOOL=source-map pnpm dev   keeps debugging, slower rebuilds
-    if (dev && !isServer && process.env.CW_WEBPACK_DEVTOOL) {
-      config.devtool = process.env.CW_WEBPACK_DEVTOOL
+    // Next's eval-source-map keeps module sources and base64 maps in executable
+    // strings (794 MB measured in a dev tab). External maps keep source debugging
+    // available without embedding those copies in every downloaded script.
+    // Next 15 installs its own EvalSourceMapDevToolPlugin and restores devtool
+    // after this callback. Remove that plugin and select the replacement when
+    // webpack creates the compiler, before it installs its devtool plugin.
+    //   CW_WEBPACK_DEVTOOL=false pnpm dev            disables maps entirely
+    //   CW_WEBPACK_DEVTOOL=eval-source-map pnpm dev  restores Next's faster rebuilds
+    if (dev && !isServer) {
+      const requestedDevtool = process.env.CW_WEBPACK_DEVTOOL || 'source-map'
+      const devtool = requestedDevtool === 'false' ? false : requestedDevtool
+      config.plugins = config.plugins.filter(
+        (plugin) => plugin?.constructor?.name !== 'EvalSourceMapDevToolPlugin'
+      )
+      config.plugins.push({
+        apply(compiler) {
+          compiler.options.devtool = devtool
+        },
+      })
     }
     // This client-heavy application produces a multi-gigabyte persistent
     // webpack cache; disable it so builds remain viable in
