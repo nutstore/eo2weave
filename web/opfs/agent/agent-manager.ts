@@ -18,6 +18,10 @@ const AGENTS_FILE = 'AGENTS.md'
 const USER_FILE = 'USER.md'
 const MEMORY_FILE = 'MEMORY.md'
 
+function isNotFoundError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === 'NotFoundError'
+}
+
 /**
  * Agent metadata
  */
@@ -155,19 +159,20 @@ export class AgentManager {
   }
 
   /**
-   * Get agent info
+   * Get agent info. Strict reads preserve missing-actor semantics while throwing
+   * storage and parse failures so context collectors do not publish withdrawals.
    */
-  async getAgent(id: string): Promise<AgentInfo | null> {
+  async getAgent(id: string, options?: { strict?: boolean }): Promise<AgentInfo | null> {
     try {
       const agentDir = await this.agentsDir.getDirectoryHandle(id)
 
       const [meta, soul, identity, agents, user, memory] = await Promise.all([
-        this.loadAgentMeta(id),
-        this.readFile(agentDir, SOUL_FILE),
-        this.readFile(agentDir, IDENTITY_FILE),
-        this.readFile(agentDir, AGENTS_FILE),
-        this.readFile(agentDir, USER_FILE),
-        this.readFile(agentDir, MEMORY_FILE),
+        this.loadAgentMeta(id, options?.strict),
+        this.readFile(agentDir, SOUL_FILE, options?.strict),
+        this.readFile(agentDir, IDENTITY_FILE, options?.strict),
+        this.readFile(agentDir, AGENTS_FILE, options?.strict),
+        this.readFile(agentDir, USER_FILE, options?.strict),
+        this.readFile(agentDir, MEMORY_FILE, options?.strict),
       ])
 
       if (!meta) return null
@@ -181,7 +186,8 @@ export class AgentManager {
         user: user || '',
         memory: memory || '',
       }
-    } catch {
+    } catch (error) {
+      if (options?.strict && !isNotFoundError(error)) throw error
       return null
     }
   }
@@ -379,11 +385,11 @@ export class AgentManager {
   /**
    * Read the agent's diary for today
    */
-  async readTodayLog(id: string): Promise<string | null> {
+  async readTodayLog(id: string, options?: { strict?: boolean }): Promise<string | null> {
     const agentDir = await this.agentsDir.getDirectoryHandle(id)
     const memoryDir = await agentDir.getDirectoryHandle(MEMORY_DIR)
     const logPath = this.getTodayLogPath()
-    return this.readFile(memoryDir, logPath)
+    return this.readFile(memoryDir, logPath, options?.strict)
   }
 
   /**
@@ -457,12 +463,13 @@ export class AgentManager {
 
   // ==================== Private methods ====================
 
-  private async readFile(dir: FileSystemDirectoryHandle, filename: string): Promise<string | null> {
+  private async readFile(dir: FileSystemDirectoryHandle, filename: string, strict = false): Promise<string | null> {
     try {
       const file = await dir.getFileHandle(filename)
       const blob = await file.getFile()
       return await blob.text()
-    } catch {
+    } catch (error) {
+      if (strict && !isNotFoundError(error)) throw error
       return null
     }
   }
@@ -478,13 +485,14 @@ export class AgentManager {
     await writable.close()
   }
 
-  private async loadAgentMeta(id: string): Promise<AgentMeta | null> {
+  private async loadAgentMeta(id: string, strict = false): Promise<AgentMeta | null> {
     try {
       const agentDir = await this.agentsDir.getDirectoryHandle(id)
-      const content = await this.readFile(agentDir, 'meta.json')
-      if (!content) return null
+      const content = await this.readFile(agentDir, 'meta.json', strict)
+      if (content === null) return null
       return JSON.parse(content) as AgentMeta
-    } catch {
+    } catch (error) {
+      if (strict && !isNotFoundError(error)) throw error
       return null
     }
   }

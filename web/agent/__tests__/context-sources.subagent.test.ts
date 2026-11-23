@@ -17,7 +17,40 @@ vi.mock('@/opfs', () => ({
 }))
 
 import { createRuntimeContextSources } from '@/agent/context/sources'
-import { collectContextSources } from '@/agent/context/journal'
+import { collectContextSources, foldContext, reconcileContext } from '@/agent/context/journal'
+import { ProjectManager } from '@/opfs'
+import { AgentManager } from '@/opfs/agent/agent-manager'
+
+function actorStorage() {
+  const today = new Date()
+  const logName = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}.md`
+  const logPath = `default/memory/${logName}`
+  const state = { failedPath: '' }
+  const files: Record<string, string> = {
+    'default/meta.json': JSON.stringify({ id: 'default', name: 'default', createdAt: 1, lastAccessedAt: 1 }),
+    'default/SOUL.md': 'SOUL BODY',
+    [logPath]: 'TODAY LOG',
+  }
+  const unavailable = new DOMException('Storage unavailable', 'NotReadableError')
+  const missing = () => new DOMException('Not found', 'NotFoundError')
+  const directory = (path: string): FileSystemDirectoryHandle => ({
+    getDirectoryHandle: async (name: string) => {
+      const child = path ? `${path}/${name}` : name
+      if (state.failedPath === child) throw unavailable
+      if (child !== 'default' && child !== 'default/memory') throw missing()
+      return directory(child)
+    },
+    getFileHandle: async (name: string) => {
+      const filePath = `${path}/${name}`
+      if (!(filePath in files)) throw missing()
+      return { getFile: async () => ({ text: async () => {
+        if (state.failedPath === filePath) throw unavailable
+        return files[filePath]
+      } }) }
+    },
+  }) as unknown as FileSystemDirectoryHandle
+  return { manager: new AgentManager(directory('')), state, logPath, files }
+}
 
 function source(id: string, toolContext: Record<string, unknown>) {
   const input = {
@@ -50,6 +83,91 @@ describe('agent persona injection boundaries', () => {
   it('fails closed when the requested actor no longer exists', async () => {
     // Impersonating the default agent would be worse than running anonymous.
     expect(await entriesOf('agent-persona', { currentAgentId: 'ghost-agent' })).toEqual({})
+  })
+
+  it.each([null, 'ghost-agent'])('withdraws prior actor context when switching to %s', async currentAgentId => {
+    const actorSources = (actorId: string | null) => ['agent-persona', 'today-log']
+      .map(id => source(id, { currentAgentId: actorId }))
+    const initial = reconcileContext([], await collectContextSources(actorSources('default')), 'fixed')!
+    const previous = foldContext([initial])
+    expect(previous.get('agent-persona')!.entries.value).toContain('SOUL BODY')
+    expect(previous.get('today-log')!.entries.value).toBe('TODAY LOG')
+
+    const observations = await collectContextSources(actorSources(currentAgentId))
+    const withdrawal = reconcileContext([initial], observations, 'fixed')
+    expect(withdrawal).toBeDefined()
+    expect(withdrawal!.contextCommit!.changes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ sourceId: 'agent-persona', removed: ['value'] }),
+      expect.objectContaining({ sourceId: 'today-log', removed: ['value'] }),
+    ]))
+    const current = foldContext([initial, withdrawal!])
+    expect(current.get('agent-persona')!.entries).toEqual({})
+    expect(current.get('today-log')!.entries).toEqual({})
+  })
+
+  it.each(['directory', 'metadata', 'persona', 'day-log'])('preserves published actor context when reading %s fails', async location => {
+    const storage = actorStorage()
+    const lookup = vi.spyOn(ProjectManager, 'create').mockResolvedValue({
+      getProject: async () => ({ agentManager: storage.manager }),
+    } as never)
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const actorSources = ['agent-persona', 'today-log'].map(id => source(id, { currentAgentId: 'default' }))
+      const initial = reconcileContext([], await collectContextSources(actorSources), 'fixed')!
+      expect(foldContext([initial]).get('agent-persona')!.entries.value).toContain('SOUL BODY')
+      expect(foldContext([initial]).get('today-log')!.entries.value).toBe('TODAY LOG')
+      storage.state.failedPath = {
+        directory: 'default', metadata: 'default/meta.json', persona: 'default/SOUL.md', 'day-log': storage.logPath,
+      }[location]!
+      const observations = await collectContextSources(actorSources)
+      if (location === 'day-log') expect(observations.map(item => item.sourceId)).toEqual(['agent-persona'])
+      else expect(observations).toEqual([])
+      expect(reconcileContext([initial], observations, 'fixed')).toBeUndefined()
+      expect(foldContext([initial]).get('today-log')!.entries.value).toBe('TODAY LOG')
+    } finally {
+      lookup.mockRestore()
+      warning.mockRestore()
+    }
+  })
+
+  it('withdraws actor context after a real actor lookup reports NotFoundError', async () => {
+    const storage = actorStorage()
+    const lookup = vi.spyOn(ProjectManager, 'create').mockResolvedValue({
+      getProject: async () => ({ agentManager: storage.manager }),
+    } as never)
+    try {
+      const actorSources = (currentAgentId: string) => ['agent-persona', 'today-log'].map(id => source(id, { currentAgentId }))
+      const initial = reconcileContext([], await collectContextSources(actorSources('default')), 'fixed')!
+      const withdrawal = reconcileContext([initial], await collectContextSources(actorSources('missing')), 'fixed')!
+      const current = foldContext([initial, withdrawal])
+      expect(current.get('agent-persona')!.entries).toEqual({})
+      expect(current.get('today-log')!.entries).toEqual({})
+    } finally {
+      lookup.mockRestore()
+    }
+  })
+
+  it('keeps legacy agent reads forgiving when no strict option was requested', async () => {
+    const storage = actorStorage()
+    storage.state.failedPath = 'default/SOUL.md'
+    expect((await storage.manager.getAgent('default'))!.soul).toBe('')
+    storage.state.failedPath = 'default/meta.json'
+    expect(await storage.manager.getAgent('default')).toBeNull()
+    storage.state.failedPath = storage.logPath
+    expect(await storage.manager.readTodayLog('default')).toBeNull()
+  })
+
+  it('preserves published actor context when the requested project is unavailable', async () => {
+    const actorSources = ['agent-persona', 'today-log'].map(id => source(id, { currentAgentId: 'default' }))
+    const initial = reconcileContext([], await collectContextSources(actorSources), 'fixed')!
+    const lookup = vi.spyOn(ProjectManager, 'create').mockResolvedValue({ getProject: async () => null } as never)
+    try {
+      const observations = await collectContextSources(actorSources)
+      expect(observations).toEqual([])
+      expect(reconcileContext([initial], observations, 'fixed')).toBeUndefined()
+    } finally {
+      lookup.mockRestore()
+    }
   })
 
   it('hides the peer roster from subagents', async () => {

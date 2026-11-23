@@ -33,12 +33,14 @@ async function resolveAgent(toolContext: { projectId?: string | null; currentAge
   // absent/empty value falls back to the default agent, so callers can opt out
   // of persona injection without losing the project lookup.
   if (toolContext.currentAgentId === null) return null
+  if (!toolContext.projectId) return null
   const project = await getProject(toolContext.projectId)
-  if (!project) return null
+  // An unavailable project may reflect a storage failure, not an actor withdrawal.
+  if (!project) return undefined
   const requested = toolContext.currentAgentId?.trim() || ''
   const agent = requested
-    ? await project.agentManager.getAgent(requested)
-    : await project.agentManager.getAgent('default')
+    ? await project.agentManager.getAgent(requested, { strict: true })
+    : await project.agentManager.getAgent('default', { strict: true })
   // Fail closed: a requested actor that no longer resolves degrades to
   // "anonymous", never to a silent impersonation of the default agent.
   if (requested && !agent) return null
@@ -148,16 +150,18 @@ export function createRuntimeContextSources(input: () => InjectEnhancementsInput
     { id: 'agent-persona', collect: async () => {
       if (input().toolContext.directMode) return {}
       const resolved = await resolveAgent(input().toolContext)
-      // Anonymous execution: omit the source entirely instead of publishing an
-      // empty snapshot (`{}`), which reads as "persona exists but is blank".
-      if (!resolved) return undefined
+      if (resolved === undefined) return undefined
+      // Authoritative absence must withdraw any previously published persona.
+      // Discovery failures still reject and are isolated by collectContextSources.
+      if (!resolved) return {}
       return scalar(resolved.agent ? buildAgentPrompt(resolved.agent, { includeTodayLog: false }) : null)
     } },
     { id: 'today-log', collect: async () => {
       if (input().toolContext.directMode) return {}
       const resolved = await resolveAgent(input().toolContext)
-      if (!resolved) return undefined
-      return scalar(resolved.agent ? await resolved.project.agentManager.readTodayLog(resolved.agent.id) : null)
+      if (resolved === undefined) return undefined
+      if (!resolved) return {}
+      return scalar(resolved.agent ? await resolved.project.agentManager.readTodayLog(resolved.agent.id, { strict: true }) : null)
     } },
     { id: 'external-tools', collect: async () => {
       if (!canUseTool('call_tool', input())) return undefined
