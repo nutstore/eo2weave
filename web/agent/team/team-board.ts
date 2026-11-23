@@ -34,16 +34,52 @@ function runKeyOf(context: ToolContext): string | undefined {
 
 const boardMutations = new Map<string, Promise<void>>()
 
+/**
+ * Bounded wait for the mutations queued ahead of one write (tests shorten it).
+ *
+ * Serializing the whole read-modify-write is what keeps two members spawning at
+ * once from reading the same manifest and dropping one task. The cost is that a
+ * single write that never settles would hold the queue with no diagnostic, so
+ * waiting for our turn is bounded and fails loudly. The chain itself is never
+ * abandoned: letting the next writer in while the previous write is still in
+ * flight is exactly the lost-task race this queue exists to prevent.
+ */
+export const teamBoardQueuePolicy = { waitTimeoutMs: 15_000 }
+
 /** Serialize complete read-modify-write operations for the same project/run. */
 async function withTeamBoardMutation<T>(context: ToolContext, operation: () => Promise<T>): Promise<T> {
   const key = JSON.stringify([context.projectId?.trim(), runKeyOf(context)])
-  const pending = (boardMutations.get(key) ?? Promise.resolve()).then(operation)
+  const previous = boardMutations.get(key) ?? Promise.resolve()
+  // Claim the slot synchronously: a caller that arrives while we are still
+  // waiting for our turn must queue behind THIS mutation, not behind `previous`
+  // (otherwise both would run at once and reintroduce the lost write).
+  let abandoned = false
+  const run = previous.then((): Promise<T> => {
+    if (abandoned) throw new Error('team board mutation abandoned before it started')
+    return operation()
+  })
   // A failed write must not prevent the next mutation from running.
-  const tail = pending.then(() => undefined, () => undefined)
+  const tail = run.then(() => undefined, () => undefined)
   boardMutations.set(key, tail)
+
+  let timer: ReturnType<typeof setTimeout> | undefined
   try {
-    return await pending
+    const timeout = new Promise<'timeout'>((resolve) => {
+      timer = setTimeout(() => resolve('timeout'), teamBoardQueuePolicy.waitTimeoutMs)
+    })
+    const turn = await Promise.race([run.then(() => 'ran' as const), timeout])
+    if (turn === 'timeout') {
+      // Abandon before the operation starts: a write that arrives after the
+      // caller already saw an error would be a surprise side effect.
+      abandoned = true
+      throw new Error(
+        `team board write queue is stuck: the previous mutation for ${key} did not finish within ` +
+          `${teamBoardQueuePolicy.waitTimeoutMs}ms`
+      )
+    }
+    return await run
   } finally {
+    if (timer !== undefined) clearTimeout(timer)
     if (boardMutations.get(key) === tail) boardMutations.delete(key)
   }
 }

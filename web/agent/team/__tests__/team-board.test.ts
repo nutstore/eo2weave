@@ -12,6 +12,7 @@ import {
   readTeamBrief,
   readTeamManifest,
   recordTeamTaskOutcome,
+  teamBoardQueuePolicy,
   teamManifestPath,
   writeTeamManifest,
 } from '../team-board'
@@ -191,6 +192,25 @@ describe('team board writes', () => {
     expect(parseTeamManifest(store.content ?? '').tasks.map(task => task.id)).toEqual(['t1', 't2'])
     const entries = (store.ledger ?? '').trim().split('\n').map(line => JSON.parse(line))
     expect(entries.map(entry => entry.taskId)).toEqual(['t1', 't2'])
+  })
+
+  it('fails loudly instead of hanging when a board write never settles', async () => {
+    const previousTimeout = teamBoardQueuePolicy.waitTimeoutMs
+    teamBoardQueuePolicy.waitTimeoutMs = 20
+    // A wedged backend write: the queue must surface it, not swallow the run.
+    resolveVfsTargetMock.mockImplementation(async () => ({
+      kind: 'team' as const,
+      path: 'manifest.json',
+      backend: { readFile: () => new Promise(() => {}), writeFile: async () => {} },
+    }))
+    try {
+      const stuck = assignTeamTask(context(), { taskId: 't1', goal: 'stuck' })
+      void stuck.catch(() => {})
+      const queued = await assignTeamTask(context({ workspaceId: 'ws-2' }), { taskId: 't2', goal: 'queued' })
+      expect(queued.error).toMatch(/write queue is stuck/)
+    } finally {
+      teamBoardQueuePolicy.waitTimeoutMs = previousTimeout
+    }
   })
 
   it('keeps the goal the lead already wrote and appends new handoff fields', async () => {
