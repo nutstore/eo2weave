@@ -254,8 +254,12 @@ export function persistMessageReplace(
     void next.then(
       () => {
         if (entry!.flushInProgress === next) entry!.flushInProgress = null
+        if (entry!.timer === null && entry!.flushInProgress === null) {
+          persistSchedulers.delete(convId)
+        }
       },
       () => {
+        // A failed final save still blocks eviction until a retry succeeds.
         if (entry!.flushInProgress === next) entry!.flushInProgress = null
       }
     )
