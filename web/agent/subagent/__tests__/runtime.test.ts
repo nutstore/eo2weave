@@ -11,9 +11,17 @@ import type {
 import { __resetSubagentRuntimeRegistryForTests, getOrCreateSubagentRuntime, disposeSubagentRuntime } from '@/agent/subagent/runtime'
 
 const hoisted = vi.hoisted(() => {
+  const storedTasks = new Map<string, StoredSubagentTask>()
+  const storedCompletions = new Map<string, import('@/agent/subagent/async-types').SubagentCompletion>()
   const repo = {
     acknowledge: vi.fn(async () => {}),
     findByWorkspaceId: vi.fn(async () => []),
+    findMetadataByWorkspaceId: vi.fn(async () => {
+      const rows = await repo.findByWorkspaceId() as StoredSubagentTask[]
+      for (const task of rows) storedTasks.set(task.agentId, structuredClone(task))
+      return rows.map(task => ({ ...task, messages: [] }))
+    }),
+    findByAgentId: vi.fn(async (_workspaceId: string, id: string) => structuredClone(storedTasks.get(id) ?? null)),
     saveBatch: vi.fn(async (_workspaceId: string, _tasks: StoredSubagentTask[]) => {}),
     commitMessages: vi.fn(async (_input: { workspaceId: string; agentId: string; executionId: string; messages: Message[] }) => ({ applied: true })),
     transitionStatus: vi.fn(async () => ({ applied: true })),
@@ -21,7 +29,11 @@ const hoisted = vi.hoisted(() => {
     finishExecution: vi.fn(async (_input: { task: unknown; completion: import('@/agent/subagent/async-types').SubagentCompletion }) => {}),
     suppressAgent: vi.fn(async () => {}),
     consume: vi.fn(async () => true),
-    find: vi.fn(async () => null),
+    find: vi.fn(async (_id: string): Promise<import('@/agent/subagent/async-types').SubagentCompletion | null> => null),
+    findMetadata: vi.fn(async (id: string) => {
+      const completion = await repo.find(id)
+      return completion ? { ...completion, messages: [] } : null
+    }),
   }
 
   const loopConfigs: any[] = []
@@ -29,6 +41,8 @@ const hoisted = vi.hoisted(() => {
 
   return {
     repo,
+    storedTasks,
+    storedCompletions,
     parentHistory: vi.fn(async () => [createAssistantMessage('parent-only history')]),
     loopConfigs,
     setRunImpl: (impl: (messages: Message[], config: any, callbacks?: any) => Promise<Message[]>) => {
@@ -183,8 +197,19 @@ describe('subagent runtime', () => {
     __resetSubagentRuntimeRegistryForTests()
     useSubagentTaskStore.setState({ tasks: {} })
     hoisted.loopConfigs.length = 0
+    hoisted.storedTasks.clear()
+    hoisted.storedCompletions.clear()
     hoisted.repo.findByWorkspaceId.mockImplementation(async () => [])
-    hoisted.repo.saveBatch.mockReset().mockResolvedValue(undefined)
+    hoisted.repo.saveBatch.mockReset().mockImplementation(async (_workspaceId, tasks) => {
+      for (const task of tasks) hoisted.storedTasks.set(task.agentId, structuredClone(task))
+    })
+    hoisted.repo.finishExecution.mockReset().mockImplementation(async ({ task, completion }) => {
+      const storedTask = task as StoredSubagentTask
+      hoisted.storedTasks.set(storedTask.agentId, structuredClone(storedTask))
+      hoisted.storedCompletions.set(completion.id, structuredClone(completion))
+    })
+    hoisted.repo.find.mockReset().mockImplementation(async (id: string) =>
+      structuredClone(hoisted.storedCompletions.get(id) ?? null))
     hoisted.repo.commitMessages.mockReset().mockResolvedValue({ applied: true })
     hoisted.repo.transitionStatus.mockImplementation(async () => ({ applied: true }))
     hoisted.repo.getStatus.mockImplementation(async () => null)
@@ -1792,16 +1817,13 @@ describe('subagent runtime', () => {
     const runtime = createRuntime(workspaceId, [])
     // Any lookup forces the lazy hydration from SQLite.
     await runtime.getStatus({ agentId: 'subagent_restored_deadline' })
-    runtime.shutdown()
-
-    for (let i = 0; i < 50 && hoisted.repo.saveBatch.mock.calls.length === 0; i += 1) {
-      await Promise.resolve()
-    }
-    const call = hoisted.repo.saveBatch.mock.calls.at(-1) as unknown as
-      | [string, Array<{ agentId: string; timeout_ms?: number }>]
-      | undefined
-    const saved = call?.[1] ?? []
-    expect(saved.find((task) => task.agentId === 'subagent_restored_deadline')?.timeout_ms).toBe(900000)
+    hoisted.setRunImpl(() => new Promise<Message[]>(() => {}))
+    await runtime.resume({ agentId: 'subagent_restored_deadline', prompt: 'continue' })
+    await waitForStatus(runtime, 'subagent_restored_deadline', 'running')
+    await vi.advanceTimersByTimeAsync(899999)
+    expect((await runtime.getStatus({ agentId: 'subagent_restored_deadline' })).status).toBe('running')
+    await vi.advanceTimersByTimeAsync(1)
+    expect((await runtime.getStatus({ agentId: 'subagent_restored_deadline' })).error?.code).toBe('SUBAGENT_TIMEOUT')
   })
 
   it('drops the live transcript once a finished task is persisted', async () => {

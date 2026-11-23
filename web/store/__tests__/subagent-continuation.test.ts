@@ -9,7 +9,7 @@ const fixture = vi.hoisted(() => ({
   visibleRefresh: vi.fn(async () => {}),
   context: { activeWorkspaceId: 'other', workspaces: [{ id: 'original', pendingCount: 0 }] },
 }))
-vi.mock('@/sqlite/repositories/subagent-completion.repository', () => ({ getSubagentCompletionRepository: () => ({ suppressAgent: fixture.suppressAgent, find: fixture.findCompletion, listProcessing: fixture.listProcessing }) }))
+vi.mock('@/sqlite/repositories/subagent-completion.repository', () => ({ getSubagentCompletionRepository: () => ({ suppressAgent: fixture.suppressAgent, find: fixture.findCompletion, findMetadata: fixture.findCompletion, listProcessing: fixture.listProcessing }) }))
 vi.mock('@/opfs', () => ({
   getWorkspaceManager: async () => ({ getWorkspace: fixture.getWorkspace }),
 }))

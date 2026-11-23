@@ -28,7 +28,7 @@ const { findAllMetaMock, findByConversationMock, getWorkspaceManagerMock } = vi.
 }))
 
 vi.mock('@/sqlite/repositories/subagent.repository', () => ({
-  getSubagentRepository: () => ({ findByWorkspaceId: async () => [], deleteTask: async () => {} }),
+  getSubagentRepository: () => ({ findByWorkspaceId: async () => [], findMetadataByWorkspaceId: async () => [], deleteTask: async () => {} }),
 }))
 vi.mock('@/sqlite/repositories/subagent-completion.repository', () => ({
   getSubagentCompletionRepository: () => ({

@@ -126,7 +126,7 @@ export function capabilityClassOf(toolName: string): ToolCapabilityClass {
  */
 export function parseCapabilityClasses(raw: unknown): ToolCapabilityClass[] | undefined {
   if (raw === undefined || raw === null) return undefined
-  if (!Array.isArray(raw) || raw.length === 0) return undefined
+  if (!Array.isArray(raw)) throw new Error('Tool capability classes must be an array')
   const classes: ToolCapabilityClass[] = []
   for (const value of raw) {
     if (typeof value !== 'string' || !ALL_TOOL_CLASSES.includes(value as ToolCapabilityClass)) {

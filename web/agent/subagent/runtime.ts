@@ -65,9 +65,10 @@ function withCapabilityClasses(registry: ToolRegistry, classes: readonly ToolCap
 }
 
 type SubagentExecution = SubagentExecutionMetadata & {
-  deps: SubagentRuntimeDeps
-  contextConfig: ReturnType<ContextManager['getConfig']>
+  deps?: SubagentRuntimeDeps
+  contextConfig?: ReturnType<ContextManager['getConfig']>
   completion?: SubagentCompletion
+  completionPersisted?: boolean
   terminalPromise?: Promise<void>
   startedAt?: number
   priorMessageIds?: Set<string>
@@ -134,6 +135,7 @@ type SubagentTaskInternal = {
   last_activity_at: number
   mode: AgentMode
   messages: Message[]
+  messagesLoaded: boolean
   queue: QueuedSubagentMessage[]
   max_queue_size: number
   overflow_action: 'reject' | 'drop_oldest'
@@ -304,8 +306,8 @@ class SubagentRuntimeImpl implements SubagentRuntime {
    * subagent; without this, a workspace that spawns many subagents keeps one
    * loop per task alive for the lifetime of the runtime — a monotonic memory
    * leak. Dropping them is safe: `ensureLoop` recreates both on a later
-   * resume, and the task's `messages` (needed for persistence and the detail
-   * panel's DB fallback) are untouched.
+   * resume. Durable transcripts are released too and loaded individually when
+   * the parent reads a trace or resumes the task.
    */
   private releaseTaskRuntime(task: SubagentTaskInternal): void {
     if (task.status !== 'completed' && task.status !== 'failed' && task.status !== 'killed') return
@@ -314,7 +316,16 @@ class SubagentRuntimeImpl implements SubagentRuntime {
     if (task.processing) return
     task.loop = undefined
     task.toolContext = undefined
-    if (task.execution) task.execution.trace = undefined
+    if (task.execution) {
+      task.execution.trace = undefined
+      task.execution.deps = undefined
+      task.execution.contextConfig = undefined
+      task.execution.priorMessageIds = undefined
+    }
+    if (task.transcriptPersisted && task.queue.length === 0) {
+      task.messages = []
+      task.messagesLoaded = false
+    }
   }
 
   private createExecution(isAsync: boolean): SubagentExecution {
@@ -358,9 +369,11 @@ class SubagentRuntimeImpl implements SubagentRuntime {
       )
     }
     const declared = agent.meta.capabilities
-    if (declared?.readonly === true) return ['read']
     try {
-      return parseCapabilityClasses(declared?.classes)
+      return intersectCapabilityClasses(
+        declared?.readonly === true ? ['read'] : undefined,
+        parseCapabilityClasses(declared?.classes),
+      )
     } catch (error) {
       // A malformed declaration must not silently widen the surface.
       console.warn('[subagent] invalid capability classes in meta.json, falling back to read-only', actorId, error)
@@ -393,9 +406,11 @@ class SubagentRuntimeImpl implements SubagentRuntime {
     // no-actor path synchronous preserves the timing callers already rely on
     // (a spawn becomes visible on the next tick, before any I/O).
     const actorClasses = input.as ? await this.loadActorClasses(input.as) : undefined
-    const capabilityClasses = requestedReadonly
-      ? (['read'] as ToolCapabilityClass[])
-      : intersectCapabilityClasses(requestedClasses, actorClasses)
+    const requestedBoundary = intersectCapabilityClasses(
+      requestedReadonly ? ['read'] : undefined,
+      requestedClasses,
+    )
+    const capabilityClasses = intersectCapabilityClasses(requestedBoundary, actorClasses)
     // Explorer is a capability boundary, not just a prompt convention. Force
     // Plan mode so write tools are never exposed, even if a caller supplies
     // mode: 'act'. The same applies to an explicit readonly request.
@@ -430,6 +445,7 @@ class SubagentRuntimeImpl implements SubagentRuntime {
       last_activity_at: now,
       mode,
       messages: [],
+      messagesLoaded: true,
       queue: [],
       max_queue_size: DEFAULT_QUEUE_SIZE,
       overflow_action: DEFAULT_OVERFLOW_ACTION,
@@ -572,7 +588,7 @@ class SubagentRuntimeImpl implements SubagentRuntime {
         `subagent finished with status ${task.status}`)
     }
     return { status: 'completed', agentId: task.agentId,
-      content: this.extractLatestAssistantContent(task.messages), usage: task.usage }
+      content: task.execution?.completion?.result ?? this.extractLatestAssistantContent(task.messages), usage: task.usage }
   }
 
   async sendMessage(input: {
@@ -786,16 +802,10 @@ class SubagentRuntimeImpl implements SubagentRuntime {
     if (!prompt) {
       throw new SubagentError(SubagentErrorCode.INVALID_INPUT, 'prompt is required', { field: 'prompt' })
     }
-    const recovered = task.messages.length
-    // If no in-memory messages, try loading from transcript
-    if (recovered === 0) {
-      const transcriptMessages = await this.loadTranscriptMessages(task.agentId)
-      if (transcriptMessages.length > 0) {
-        task.messages = transcriptMessages
-      }
-    }
-    const transcriptRecovered = task.messages.length
+    let transcriptRecovered = 0
     await this.withTaskPersistence(task, async () => {
+      await this.loadTaskMessages(task)
+      transcriptRecovered = task.messages.length
       if (typeof input.timeout_ms === 'number') {
         task.timeout_ms = this.parseExecutionTimeout(input.timeout_ms)
       }
@@ -882,7 +892,14 @@ class SubagentRuntimeImpl implements SubagentRuntime {
       throw new SubagentError(SubagentErrorCode.TASK_NOT_FOUND,
         `execution ${input.execution_id || '(current)'} not found for subagent ${task.agentId}`)
     }
-    const messages = execution.completion?.messages ?? task.messages
+    // Read a terminal snapshot locally, without pinning it back into the runtime.
+    let messages = execution.completion?.messages.length ? execution.completion.messages : task.messages
+    if (execution.completionPersisted && execution.completion) {
+      const { getSubagentCompletionRepository } = await this.repositories
+      messages = (await getSubagentCompletionRepository().find(execution.completion.id))?.messages ?? []
+    } else if (!task.messagesLoaded) {
+      messages = await this.readTaskMessages(task)
+    }
     const limit = Number.isFinite(input.limit) ? Math.max(1, Math.min(50, Math.floor(input.limit!))) : 20
     // offset counts from the END: parents diagnose what the child did last,
     // so the default window is the most recent steps.
@@ -971,7 +988,7 @@ class SubagentRuntimeImpl implements SubagentRuntime {
     const failed = rejected.map((entry) => ({ ...entry, agentId: '' }))
     for (const { task_index, task } of items) {
       if (task.status === 'completed') completed.push({ task_index, agentId: task.agentId,
-        content: this.extractLatestAssistantContent(task.messages), usage: task.usage })
+        content: task.execution?.completion?.result ?? this.extractLatestAssistantContent(task.messages), usage: task.usage })
       else failed.push({ task_index, agentId: task.agentId, reason: task.error?.message || task.status,
         error_code: task.error?.code || 'SUBAGENT_FAILED' })
     }
@@ -982,6 +999,7 @@ class SubagentRuntimeImpl implements SubagentRuntime {
     task: SubagentTaskInternal,
     input: { code: string; message: string; recoverable: boolean }
   ): Promise<void> {
+    await this.loadTaskMessages(task)
     task.stopped = true
     task.running_notification_armed = false
     task.error = { code: input.code, message: input.message }
@@ -1042,8 +1060,9 @@ class SubagentRuntimeImpl implements SubagentRuntime {
         this.detach(task)
         return
       }
-      // Queue drained into a terminal state — release the live loop/context.
-      this.releaseTaskRuntime(task)
+      // Final writes and a concurrent resume share this lane. Release only
+      // after them, so unloading cannot race a continuation's history load.
+      return this.withTaskPersistence(task, async () => this.releaseTaskRuntime(task))
     })
     return task.processingPromise
   }
@@ -1112,6 +1131,7 @@ class SubagentRuntimeImpl implements SubagentRuntime {
 
       task.execution = queued.execution ?? this.createExecution(false)
       task.terminalPersisting = false
+      task.transcriptPersisted = false
       task.loop = undefined
       task.toolContext = undefined
       task.error = undefined
@@ -1373,8 +1393,8 @@ class SubagentRuntimeImpl implements SubagentRuntime {
   private ensureLoop(task: SubagentTaskInternal, execution: SubagentExecution, lifecycleVersion: number): AgentLoop {
     if (task.loop) return task.loop
 
-    const deps = execution.deps
-    const contextConfig = execution.contextConfig
+    const deps = execution.deps ?? this.deps
+    const contextConfig = execution.contextConfig ?? deps.contextManager.getConfig()
     // Build the role-specific system prompt by appending behavior suffix
     // based on subagent_type. For 'general-purpose', returns base unchanged.
     const finalSystemPrompt = buildSubagentSystemPrompt(
@@ -1413,6 +1433,7 @@ class SubagentRuntimeImpl implements SubagentRuntime {
       currentAgentId: task.actorId ?? null,
       capabilityClasses: task.capabilityClasses,
       teamTaskId: task.teamTaskId,
+      teamRunKey: task.teamRunKey ?? deps.baseToolContext.teamRunKey,
       conversationHistory: { id: task.agentId, read: async () => [...task.messages] },
       agentMode: task.mode,
       subagentRuntime: undefined,
@@ -1713,6 +1734,7 @@ class SubagentRuntimeImpl implements SubagentRuntime {
         if (task.status === 'completed') {
           return { success: false as const, message: 'TASK_ALREADY_COMPLETED' as const }
         }
+        await this.loadTaskMessages(task)
         const queuedAt = Date.now()
         const result = this.enqueueMessage(task, message, queuedAt, {
           overflow_action: options.overflow_action,
@@ -1846,7 +1868,7 @@ class SubagentRuntimeImpl implements SubagentRuntime {
         step,
         timestamp: Date.now(),
       }
-      execution.deps.onNotification?.(notification)
+      execution.deps?.onNotification?.(notification)
     } catch (error) {
       // Step notification failures are non-fatal — don't break the subagent
       console.debug('[SubagentRuntime] step notification delivery failed', {
@@ -1918,7 +1940,7 @@ class SubagentRuntimeImpl implements SubagentRuntime {
       : []
     return {
       id, agentId: task.agentId, executionId: execution.executionId,
-      conversationId: execution.conversationId, projectId: execution.continuation?.projectId ?? execution.deps.baseToolContext.projectId,
+      conversationId: execution.conversationId, projectId: execution.continuation?.projectId ?? execution.deps?.baseToolContext.projectId,
       parentToolCallId: task.parentToolCallId, continuation: execution.continuation,
       notificationMessageId: `subagent-completion:${id}`,
       status: execution.suppressed || task.stopped || !execution.isAsync ? 'suppressed' : 'pending',
@@ -1949,12 +1971,16 @@ class SubagentRuntimeImpl implements SubagentRuntime {
     task.terminalPersisting = false
     // The transcript above is committed, so the store no longer needs its own copy.
     task.transcriptPersisted = true
-    execution.completion = completion
-    this.completions.set(id, completion)
+    // SQLite owns the full snapshot. Runtime delivery bookkeeping needs only
+    // the result and status, not another deep copy of every tool payload.
+    const metadata = { ...completion, messages: [] }
+    execution.completion = metadata
+    execution.completionPersisted = execution.isAsync
+    this.completions.set(id, metadata)
     this.publishTask(task)
     if (completion.status === 'pending') {
       try {
-        void Promise.resolve(execution.deps.onCompletionReady?.(completion)).catch((error) => {
+        void Promise.resolve(execution.deps?.onCompletionReady?.(completion)).catch((error) => {
           console.warn('[SubagentRuntime] completion ready callback failed', error)
         })
       } catch (error) { console.warn('[SubagentRuntime] completion ready callback failed', error) }
@@ -2024,6 +2050,7 @@ class SubagentRuntimeImpl implements SubagentRuntime {
 
   /** Capture the current row only after entering its persistence lane. */
   private async writeTask(task: SubagentTaskInternal): Promise<void> {
+    await this.loadTaskMessages(task)
     const { getSubagentRepository } = await this.repositories
     if (this.disposed) throw new Error('Subagent runtime is disposed.')
     await getSubagentRepository().saveBatch(this.deps.workspaceId, [this.toStoredTask(task)])
@@ -2033,10 +2060,11 @@ class SubagentRuntimeImpl implements SubagentRuntime {
     if (this.disposed) return
     try {
       await Promise.all(Array.from(this.tasks.values(), task => this.withTaskPersistence(task, async () => {
-        if (this.disposed || !task.accepted || task.terminalPersisting) return
+        if (this.disposed || !task.accepted || task.terminalPersisting || !task.messagesLoaded) return
+        const snapshot = this.toStoredTask(task)
         const { getSubagentRepository } = await this.repositories
         if (this.disposed) return
-        await getSubagentRepository().saveBatch(this.deps.workspaceId, [this.toStoredTask(task)])
+        await getSubagentRepository().saveBatch(this.deps.workspaceId, [snapshot])
       })))
     } catch {
       // ignore persistence failures for runtime continuity
@@ -2047,7 +2075,7 @@ class SubagentRuntimeImpl implements SubagentRuntime {
     try {
       const { getSubagentRepository } = await this.repositories
       const repo = getSubagentRepository()
-      const parsed = await repo.findByWorkspaceId(this.deps.workspaceId)
+      const parsed = await repo.findMetadataByWorkspaceId(this.deps.workspaceId)
       for (const item of parsed) {
         const revived: SubagentTaskInternal = {
           agentId: item.agentId,
@@ -2064,7 +2092,8 @@ class SubagentRuntimeImpl implements SubagentRuntime {
           updated_at: item.updated_at,
           last_activity_at: item.last_activity_at,
           mode: item.mode,
-          messages: item.messages,
+          messages: [],
+          messagesLoaded: false,
           queue: [],
           max_queue_size: DEFAULT_QUEUE_SIZE,
           overflow_action: DEFAULT_OVERFLOW_ACTION,
@@ -2081,23 +2110,26 @@ class SubagentRuntimeImpl implements SubagentRuntime {
           transcriptWriter: undefined,
           subagent_type: (item.subagent_type as SubagentType | undefined) ?? 'general-purpose',
           parentToolCallId: item.parentToolCallId,
+          capabilityClasses: item.execution?.capabilityClasses,
         }
-        const execution = item.execution
-          ? { ...this.createExecution(item.execution.isAsync), ...item.execution }
-          : { ...this.createExecution(false), executionId: `legacy:${item.agentId}` }
+        const execution: SubagentExecution = item.execution
+          ? { ...item.execution }
+          : { executionId: `legacy:${item.agentId}`, isAsync: false,
+              conversationId: this.deps.workspaceId, suppressed: false, changedPaths: [] }
         revived.execution = execution
         // Revived from SQLite, so the persisted copy already owns the transcript.
         revived.transcriptPersisted = true
         revived.latestExecution = execution
         if (revived.status !== 'pending' && revived.status !== 'running') {
           const { getSubagentCompletionRepository } = await this.repositories
-          const persisted = item.execution ? await getSubagentCompletionRepository().find(`${item.agentId}:${execution.executionId}`) : null
+          const persisted = item.execution ? await getSubagentCompletionRepository().findMetadata(`${item.agentId}:${execution.executionId}`) : null
           const completion = persisted ?? {
             ...this.makeCompletion(revived, execution),
             result: revived.status === 'completed' ? this.extractLatestAssistantContent(revived.messages) : '',
             status: 'suppressed' as const,
           }
           execution.completion = completion
+          execution.completionPersisted = !!persisted
           this.completions.set(completion.id, completion)
         }
         this.tasks.set(revived.agentId, revived)
@@ -2110,6 +2142,19 @@ class SubagentRuntimeImpl implements SubagentRuntime {
     } catch {
       // ignore hydration failures; runtime remains usable in-memory
     }
+  }
+
+  private async readTaskMessages(task: SubagentTaskInternal): Promise<Message[]> {
+    const { getSubagentRepository } = await this.repositories
+    const stored = await getSubagentRepository().findByAgentId(this.deps.workspaceId, task.agentId)
+    return stored?.messages ?? this.loadTranscriptMessages(task.agentId)
+  }
+
+  /** Restore exactly one task before a write or a continuation. */
+  private async loadTaskMessages(task: SubagentTaskInternal): Promise<void> {
+    if (task.messagesLoaded) return
+    task.messages = await this.readTaskMessages(task)
+    task.messagesLoaded = true
   }
 
   private toStoredTask(task: SubagentTaskInternal): {
@@ -2135,7 +2180,10 @@ class SubagentRuntimeImpl implements SubagentRuntime {
     return {
       agentId: task.agentId,
       workspaceId: this.deps.workspaceId,
-      execution: task.latestExecution ? this.executionMetadata(task.latestExecution) : undefined,
+      execution: task.latestExecution ? {
+        ...this.executionMetadata(task.latestExecution),
+        capabilityClasses: task.capabilityClasses ? [...task.capabilityClasses] : undefined,
+      } : undefined,
       name: task.name,
       description: task.description,
       status: task.queue.length && task.latestExecution !== task.execution && !task.stopped ? 'pending' : task.status,

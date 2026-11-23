@@ -55,7 +55,16 @@ describe('parseCapabilityClasses', () => {
   it('returns undefined when nothing was declared', () => {
     expect(parseCapabilityClasses(undefined)).toBeUndefined()
     expect(parseCapabilityClasses(null)).toBeUndefined()
-    expect(parseCapabilityClasses([])).toBeUndefined()
+  })
+
+  it('preserves an explicitly empty class set as restrictive', () => {
+    const classes = parseCapabilityClasses([])
+    expect(classes).toEqual([])
+    expect(isToolAllowedByClasses('read', classes)).toBe(false)
+  })
+
+  it.each(['read', { read: true }, 1, false])('rejects a non-array declaration: %j', raw => {
+    expect(() => parseCapabilityClasses(raw)).toThrow(/must be an array/)
   })
 
   it('throws on an unknown class instead of ignoring it', () => {

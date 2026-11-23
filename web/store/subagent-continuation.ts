@@ -101,7 +101,7 @@ export async function recoverSubagentContinuations(conversationIds: string[]): P
     for (const task of tasks) {
       const interrupted = task.status === 'pending' || task.status === 'running'
       const completion = task.execution
-        ? await repository.find(`${task.agentId}:${task.execution.executionId}`)
+        ? await repository.findMetadata(`${task.agentId}:${task.execution.executionId}`)
         : null
       useSubagentTaskStore.getState().publish({
         agentId: task.agentId,
