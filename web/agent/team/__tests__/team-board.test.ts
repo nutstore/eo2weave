@@ -180,6 +180,19 @@ describe('team board writes', () => {
     expect(result?.brief).toContain('Audit the resolver')
   })
 
+  it('preserves both tasks and ledger entries when assigning in parallel', async () => {
+    const store = boardStore()
+    const outcomes = await Promise.all([
+      assignTeamTask(context(), { taskId: 't1', goal: 'First task' }),
+      assignTeamTask(context({ workspaceId: 'ws-2' }), { taskId: 't2', goal: 'Second task' }),
+    ])
+
+    expect(outcomes.map(outcome => outcome.error)).toEqual([undefined, undefined])
+    expect(parseTeamManifest(store.content ?? '').tasks.map(task => task.id)).toEqual(['t1', 't2'])
+    const entries = (store.ledger ?? '').trim().split('\n').map(line => JSON.parse(line))
+    expect(entries.map(entry => entry.taskId)).toEqual(['t1', 't2'])
+  })
+
   it('keeps the goal the lead already wrote and appends new handoff fields', async () => {
     boardStore(serializeTeamManifest({ ...emptyTeamManifest('Run goal'), tasks: [{ id: 't1', goal: 'Original goal', status: 'pending' as const, handoff: { expects: 'a list' } }] }))
     const { result } = await assignTeamTask(context(), { taskId: 't1', goal: 'Different wording', handoff: { writes: ['by/t1/out.md'] } })
@@ -244,6 +257,26 @@ describe('team board terminal states', () => {
     expect(parseTeamManifest(store.content ?? '').tasks[0].status).toBe('blocked')
   })
 
+  it('preserves both terminal states when tasks finish in parallel', async () => {
+    const store = boardStore(serializeTeamManifest({
+      ...emptyTeamManifest('g'),
+      tasks: [
+        { id: 't1', goal: 'First task', status: 'running' },
+        { id: 't2', goal: 'Second task', status: 'running' },
+      ],
+    }))
+
+    await Promise.all([
+      recordTeamTaskOutcome(context(), { taskId: 't1', status: 'done', artifacts: ['by/t1/out.md'] }),
+      recordTeamTaskOutcome(context(), { taskId: 't2', status: 'blocked', error: 'boom' }),
+    ])
+
+    expect(parseTeamManifest(store.content ?? '').tasks).toMatchObject([
+      { id: 't1', status: 'done', artifacts: ['by/t1/out.md'] },
+      { id: 't2', status: 'blocked' },
+    ])
+  })
+
   it('refuses to finish a task that is not on the board', async () => {
     boardStore(running)
     await expect(recordTeamTaskOutcome(context(), { taskId: 'ghost', status: 'done' })).rejects.toThrow(/no task "ghost"/)
@@ -265,6 +298,17 @@ describe('team board terminal states', () => {
     await appendTeamLedger(context(), { at: 3, taskId: 't1', event: 'blocked', status: 'blocked' })
     expect(store.ledger?.startsWith('{"event":"spawned"}\n')).toBe(true)
     expect(store.ledger?.endsWith('\n')).toBe(true)
+  })
+
+  it('preserves both ledger entries when appending in parallel', async () => {
+    const store = boardStore(running)
+    await Promise.all([
+      appendTeamLedger(context(), { at: 1, taskId: 't1', event: 'done', status: 'done' }),
+      appendTeamLedger(context(), { at: 2, taskId: 't2', event: 'blocked', status: 'blocked' }),
+    ])
+
+    const entries = (store.ledger ?? '').trim().split('\n').map(line => JSON.parse(line))
+    expect(entries.map(entry => entry.taskId)).toEqual(['t1', 't2'])
   })
 
   it('lists only files in the member slot, as board-relative paths', async () => {

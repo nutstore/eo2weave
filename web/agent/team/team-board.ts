@@ -32,6 +32,22 @@ function runKeyOf(context: ToolContext): string | undefined {
   return typeof runKey === 'string' && runKey.trim() ? runKey.trim() : undefined
 }
 
+const boardMutations = new Map<string, Promise<void>>()
+
+/** Serialize complete read-modify-write operations for the same project/run. */
+async function withTeamBoardMutation<T>(context: ToolContext, operation: () => Promise<T>): Promise<T> {
+  const key = JSON.stringify([context.projectId?.trim(), runKeyOf(context)])
+  const pending = (boardMutations.get(key) ?? Promise.resolve()).then(operation)
+  // A failed write must not prevent the next mutation from running.
+  const tail = pending.then(() => undefined, () => undefined)
+  boardMutations.set(key, tail)
+  try {
+    return await pending
+  } finally {
+    if (boardMutations.get(key) === tail) boardMutations.delete(key)
+  }
+}
+
 /** Read a run's manifest. `null` means "no board / no manifest" (not an error). */
 export async function readTeamManifest(context: ToolContext): Promise<TeamManifest | null> {
   const runKey = runKeyOf(context)
@@ -50,6 +66,11 @@ export async function readTeamManifest(context: ToolContext): Promise<TeamManife
 }
 
 export async function writeTeamManifest(context: ToolContext, manifest: TeamManifest): Promise<void> {
+  return withTeamBoardMutation(context, () => writeTeamManifestUnlocked(context, manifest))
+}
+
+/** Called only while the run's mutation queue is held. */
+async function writeTeamManifestUnlocked(context: ToolContext, manifest: TeamManifest): Promise<void> {
   const runKey = runKeyOf(context)
   if (!runKey) throw new Error('cannot write a team manifest without a run key')
   const target = await resolveVfsTarget(teamManifestPath(runKey), context, 'write')
@@ -162,37 +183,39 @@ export async function assignTeamTask(
   }
 
   try {
-    const manifest = (await readTeamManifest(context)) ?? emptyTeamManifest()
-    const existing = findTeamTask(manifest, taskId)
-    const handoff = mergeHandoff(existing?.handoff, input.handoff)
-    const task: TeamTask = {
-      id: taskId,
-      // Keep the goal the lead already wrote; the spawn description is only a
-      // fallback, so a second spawn of the same task cannot silently reword it.
-      goal: existing?.goal || input.goal?.trim() || taskId,
-      assignee: input.assignee !== undefined ? input.assignee : (existing?.assignee ?? null),
-      status: 'running',
-      updatedAt: Date.now(),
-    }
-    if (handoff) task.handoff = handoff
-    if (existing?.artifacts?.length) task.artifacts = existing.artifacts
-    const next = upsertTeamTask({ ...manifest, goal: manifest.goal }, task)
-    next.updatedAt = task.updatedAt
-    await writeTeamManifest(context, next)
-    // The ledger is history, not state: if it cannot be written the task is
-    // still recorded in the manifest, so this must not fail the spawn.
-    try {
-      await appendTeamLedger(context, {
-        at: task.updatedAt ?? Date.now(),
-        taskId,
-        event: 'spawned',
+    return await withTeamBoardMutation(context, async () => {
+      const manifest = (await readTeamManifest(context)) ?? emptyTeamManifest()
+      const existing = findTeamTask(manifest, taskId)
+      const handoff = mergeHandoff(existing?.handoff, input.handoff)
+      const task: TeamTask = {
+        id: taskId,
+        // Keep the goal the lead already wrote; the spawn description is only a
+        // fallback, so a second spawn of the same task cannot silently reword it.
+        goal: existing?.goal || input.goal?.trim() || taskId,
+        assignee: input.assignee !== undefined ? input.assignee : (existing?.assignee ?? null),
         status: 'running',
-        actorId: task.assignee ?? null,
-      })
-    } catch {
-      // ignore: the manifest above is the record that matters
-    }
-    return { result: { task, manifest: next, brief: renderTeamTask(next, taskId), runGoal: await readTeamBrief(context) } }
+        updatedAt: Date.now(),
+      }
+      if (handoff) task.handoff = handoff
+      if (existing?.artifacts?.length) task.artifacts = existing.artifacts
+      const next = upsertTeamTask({ ...manifest, goal: manifest.goal }, task)
+      next.updatedAt = task.updatedAt
+      await writeTeamManifestUnlocked(context, next)
+      // The ledger is history, not state: if it cannot be written the task is
+      // still recorded in the manifest, so this must not fail the spawn.
+      try {
+        await appendTeamLedgerUnlocked(context, {
+          at: task.updatedAt ?? Date.now(),
+          taskId,
+          event: 'spawned',
+          status: 'running',
+          actorId: task.assignee ?? null,
+        })
+      } catch {
+        // ignore: the manifest above is the record that matters
+      }
+      return { result: { task, manifest: next, brief: renderTeamTask(next, taskId), runGoal: await readTeamBrief(context) } }
+    })
   } catch (error) {
     return { error: error instanceof Error ? error.message : String(error) }
   }
@@ -219,16 +242,18 @@ export async function recordTeamTaskOutcome(
   context: ToolContext,
   input: TeamTaskOutcomeInput,
 ): Promise<TeamManifest> {
-  const manifest = (await readTeamManifest(context)) ?? emptyTeamManifest()
-  if (!findTeamTask(manifest, input.taskId)) {
-    throw new Error(`no task "${input.taskId}" on the board to finish`)
-  }
-  const patch: Partial<Omit<TeamTask, 'id' | 'status'>> = { updatedAt: Date.now() }
-  if (input.artifacts?.length) patch.artifacts = input.artifacts
-  const next = setTeamTaskStatus(manifest, input.taskId, input.status, patch)
-  next.updatedAt = patch.updatedAt
-  await writeTeamManifest(context, next)
-  return next
+  return withTeamBoardMutation(context, async () => {
+    const manifest = (await readTeamManifest(context)) ?? emptyTeamManifest()
+    if (!findTeamTask(manifest, input.taskId)) {
+      throw new Error(`no task "${input.taskId}" on the board to finish`)
+    }
+    const patch: Partial<Omit<TeamTask, 'id' | 'status'>> = { updatedAt: Date.now() }
+    if (input.artifacts?.length) patch.artifacts = input.artifacts
+    const next = setTeamTaskStatus(manifest, input.taskId, input.status, patch)
+    next.updatedAt = patch.updatedAt
+    await writeTeamManifestUnlocked(context, next)
+    return next
+  })
 }
 
 /** One line of the run's append-only history. */
@@ -245,12 +270,15 @@ export interface TeamLedgerEntry {
 /**
  * Append one event to `_ledger.jsonl`.
  *
- * Read-modify-write because the backend has no append mode; the run is the only
- * writer and events are small, so a lost-concurrency story here is not worth the
- * complexity. A malformed ledger is preferable to a malformed manifest: readers
- * of the ledger can skip an unparsable line, whereas the manifest is state.
+ * The backend has no append mode, so the full read-modify-write shares the run's
+ * mutation queue with manifest updates.
  */
 export async function appendTeamLedger(context: ToolContext, entry: TeamLedgerEntry): Promise<void> {
+  return withTeamBoardMutation(context, () => appendTeamLedgerUnlocked(context, entry))
+}
+
+/** Called only while the run's mutation queue is held. */
+async function appendTeamLedgerUnlocked(context: ToolContext, entry: TeamLedgerEntry): Promise<void> {
   const runKey = runKeyOf(context)
   if (!runKey) throw new Error('cannot append to a team ledger without a run key')
   const path = `vfs://team/${runKey}/${TEAM_LEDGER_FILE}`
