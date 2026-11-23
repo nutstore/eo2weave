@@ -1,7 +1,8 @@
 import { restoreCompressionBaseline } from '@/agent/loop/context-compression'
 //=============================================================================
 // Conversation message operations — pure helpers extracted from
-// conversation.store.sqlite.ts (Task B2, docs/plans/2026-09-19-split-large-files.md).
+// conversation.store.sqlite.ts (Task B2 of the 2026-09 split-large-files plan;
+// plans are kept as local notes and no longer tracked by git).
 //
 // Everything in this file is a pure function or explicitly parameterized
 // helper: none of them close over the store instance or module state.
