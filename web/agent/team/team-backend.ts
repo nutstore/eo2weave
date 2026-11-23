@@ -107,17 +107,46 @@ export class TeamBackend implements VfsBackend {
     await dir.removeEntry(fileName)
   }
 
-  async listDir(path: string, _options?: VfsListOptions): Promise<VfsDirEntry[]> {
-    let targetDir = this.root
-    for (const segment of splitPath(path)) {
-      targetDir = await targetDir.getDirectoryHandle(segment)
+  async deleteDir(path: string): Promise<{ deletedFiles: string[]; deletedDirs: string[] }> {
+    const normalized = splitPath(path).join('/')
+    if (!normalized) throw new Error('Cannot delete the team board root')
+
+    const provider = fromFileSystemHandle(this.root)
+    if ((await provider.stat(normalized)).kind === 'file') {
+      await this.deleteFile(normalized)
+      return { deletedFiles: [normalized], deletedDirs: [] }
     }
+
+    const entries = await this.listDir(normalized, { recursive: true })
+    await provider.remove(normalized, { recursive: true })
+    return {
+      deletedFiles: entries.filter(entry => entry.kind === 'file').map(entry => entry.path),
+      deletedDirs: [
+        ...entries.filter(entry => entry.kind === 'directory')
+          .sort((a, b) => b.path.split('/').length - a.path.split('/').length)
+          .map(entry => entry.path),
+        normalized,
+      ],
+    }
+  }
+
+  async listDir(path: string, options?: VfsListOptions): Promise<VfsDirEntry[]> {
+    const normalized = splitPath(path).join('/')
+    const provider = fromFileSystemHandle(this.root)
+    const maxDepth = options?.maxDepth ?? Infinity
     const entries: VfsDirEntry[] = []
-    for await (const [name, entry] of (targetDir as unknown as {
-      entries(): AsyncIterableIterator<[string, { kind: 'file' | 'directory' }]>
-    }).entries()) {
-      entries.push({ name, path: path ? `${path}/${name}` : name, kind: entry.kind })
+
+    const collect = async (currentPath: string, depth: number): Promise<void> => {
+      for (const entry of await provider.readdir(currentPath)) {
+        const entryPath = currentPath ? `${currentPath}/${entry.name}` : entry.name
+        entries.push({ ...entry, path: entryPath })
+        if (entry.kind === 'directory' && options?.recursive && depth < maxDepth) {
+          await collect(entryPath, depth + 1)
+        }
+      }
     }
+
+    await collect(normalized, 1)
     return entries
   }
 
