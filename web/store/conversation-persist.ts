@@ -298,9 +298,11 @@ export function persistMessageReplace(
       },
       () => {
         if (entry!.flushInProgress === next) entry!.flushInProgress = null
-        if (entry!.timer === null && entry!.flushInProgress === null) {
-          persistSchedulers.delete(convId)
-        }
+        // Mirror the final-save path above: a failed write keeps the
+        // conversation marked as "still saving". Eviction is gated on this
+        // map (`hasPendingPersist`), so releasing the guard after a failure
+        // would let the recycler unload the only copy of messages that never
+        // reached SQLite — a transient write error would become data loss.
       }
     )
   }, PERSIST_DEBOUNCE_MS)

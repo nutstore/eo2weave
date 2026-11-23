@@ -675,6 +675,29 @@ describe('conversation message memory eviction', () => {
     expect(evictConversationMessagesIfSafe(old)).toBe(true)
   })
 
+  it('keeps eviction blocked when a debounced write fails', async () => {
+    const [old] = seedEvictFixture()
+    const messages = getConv(old)!.messages
+    conversationRepoTouchMock.mockRejectedValueOnce(new Error('db down'))
+    const pending = persistMessageReplace(old, messages, false)
+    const rejection = expect(pending).rejects.toThrow('db down')
+    await vi.advanceTimersByTimeAsync(400)
+    await rejection
+    // The write never reached SQLite: unloading now would drop the only copy.
+    expect(persistSchedulers.has(old)).toBe(true)
+    expect(evictConversationMessagesIfSafe(old)).toBe(false)
+  })
+
+  it('keeps eviction blocked when a final save fails', async () => {
+    const [old] = seedEvictFixture()
+    const messages = getConv(old)!.messages
+    conversationRepoTouchMock.mockRejectedValueOnce(new Error('db down'))
+    await expect(persistMessageReplace(old, messages, true)).rejects.toThrow('db down')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(persistSchedulers.has(old)).toBe(true)
+    expect(evictConversationMessagesIfSafe(old)).toBe(false)
+  })
+
   it('allows eviction after an immediate final save supersedes a debounced save', async () => {
     const [old] = seedEvictFixture()
     const messages = getConv(old)!.messages
