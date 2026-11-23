@@ -1624,6 +1624,36 @@ describe('subagent runtime', () => {
     expect(resumed.transcript_entries_recovered).toBe(2)
   })
 
+  it('recovers the transcript when the stored row carries an empty message array', async () => {
+    const workspaceId = `workspace-hydrate-empty-${Date.now()}`
+    hoisted.repo.findByWorkspaceId.mockResolvedValueOnce([
+      createStoredTask({
+        workspaceId,
+        agentId: 'subagent_persisted_empty',
+        status: 'pending',
+        messages: [],
+      }),
+    ] as any)
+
+    const runtime = createRuntime(workspaceId, [])
+    // createTask persists the row before any message exists, so a task interrupted
+    // right after its spawn reloads with `messages: []` while the transcript on
+    // disk still holds the whole run. An empty array must not shadow it.
+    ;(
+      runtime as unknown as { loadTranscriptMessages: (agentId: string) => Promise<Message[]> }
+    ).loadTranscriptMessages = vi.fn(async () => [
+      { id: 'u1', role: 'user', content: 'first', timestamp: Date.now() - 3000 },
+      { id: 'a1', role: 'assistant', content: 'answer', timestamp: Date.now() - 2000 },
+    ] as Message[])
+
+    const resumed = await runtime.resume({
+      agentId: 'subagent_persisted_empty',
+      prompt: 'continue from checkpoint',
+    })
+    expect(resumed.status).toBe('resumed')
+    expect(resumed.transcript_entries_recovered).toBe(2)
+  })
+
   it('restores the owning tool-call ID for notifications after hydration', async () => {
     const workspaceId = `workspace-hydrate-parent-${Date.now()}`
     hoisted.repo.findByWorkspaceId.mockResolvedValueOnce([

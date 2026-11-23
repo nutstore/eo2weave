@@ -2156,7 +2156,11 @@ class SubagentRuntimeImpl implements SubagentRuntime {
   private async readTaskMessages(task: SubagentTaskInternal): Promise<Message[]> {
     const { getSubagentRepository } = await this.repositories
     const stored = await getSubagentRepository().findByAgentId(this.deps.workspaceId, task.agentId)
-    return stored?.messages ?? this.loadTranscriptMessages(task.agentId)
+    // `createTask` persists the row before any message exists, so an empty array
+    // is the normal shape of a task that was interrupted — `??` would take it and
+    // drop a transcript that is sitting in OPFS.
+    if (stored?.messages?.length) return stored.messages
+    return this.loadTranscriptMessages(task.agentId)
   }
 
   /** Restore exactly one task before a write or a continuation. */
