@@ -288,6 +288,10 @@ export function createAgentRunner(options: AgentRunnerOptions): AgentRunner {
   /** Prior steps already served in this run, so a step is never reused twice. */
   const consumedPrior = new Set<number>()
 
+  /** Copies of a computation re-executed by `retry` — never served by fallback. */
+  const retiredKeys = new Set<string>()
+  const cacheKeyOf = (prompt: string, optionsKey: string): string => `${prompt}\u0000${optionsKey}`
+
   /**
    * Cache hit = same prompt text plus same options, preferring this step index.
    * Falling back to any unconsumed prior step keeps replay working when a script
@@ -298,13 +302,17 @@ export function createAgentRunner(options: AgentRunnerOptions): AgentRunner {
   const findCachedStep = (
     prior: Map<number, AgentStepRecord>, index: number, prompt: string, optionsKey: string,
   ): AgentStepRecord | undefined => {
-    const usable = (record: AgentStepRecord | undefined): record is AgentStepRecord =>
+    const matches = (record: AgentStepRecord | undefined): record is AgentStepRecord =>
       !!record && record.status === 'completed' && !consumedPrior.has(record.stepIndex) &&
       record.prompt === prompt && record.optionsKey === optionsKey
     const exact = prior.get(index)
-    if (usable(exact)) return exact
+    if (matches(exact)) return exact
+    // A retried computation's older copies are stale. An exact-index row still
+    // belongs to its own step, but the out-of-order fallback must not hand one
+    // to a step that has no row of its own.
+    if (retiredKeys.has(cacheKeyOf(prompt, optionsKey))) return undefined
     for (const record of [...prior.values()].sort((a, b) => a.stepIndex - b.stepIndex)) {
-      if (usable(record)) return record
+      if (matches(record)) return record
     }
     return undefined
   }
@@ -335,8 +343,16 @@ export function createAgentRunner(options: AgentRunnerOptions): AgentRunner {
         steps.push({ index, status: 'cached', agentId: prior.agentId ?? undefined })
         return { content: prior.result ?? '', agentId: prior.agentId, usage: null, cached: true }
       }
-      if (forced) consumedPrior.add(index)
-      else diverged = true
+      if (forced) {
+        // A retry re-runs this computation, so every older copy of it is stale.
+        // Retire the (prompt, optionsKey) pair rather than this step index: an
+        // index can hold another step's row (which must stay cached) while the
+        // stale copies of this computation can sit at other indices (where the
+        // fallback would otherwise serve one to a later step).
+        retiredKeys.add(cacheKeyOf(prompt, normalized.optionsKey))
+      } else {
+        diverged = true
+      }
     }
 
     const startedAt = now()

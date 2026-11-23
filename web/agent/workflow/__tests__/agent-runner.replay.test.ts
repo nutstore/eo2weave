@@ -152,6 +152,24 @@ describe('agent runner replay', () => {
     expect(result.cached).toBe(false)
     expect(spawn).toHaveBeenCalledTimes(1)
   })
+
+  it('retires every prior row of a retried prompt, not only its own index', async () => {
+    // Cache identity is (prompt, optionsKey) with the index only a fallback, and
+    // a hit returns instantly, so call order drifts between runs. Here row 0
+    // answered `p1`; this run asks `p2` first (consuming row 1), then retries
+    // `p1`. Row 0 must not survive to answer a later `p1` step with the stale
+    // pre-retry output.
+    const { store } = fakeStore([completedRow(0, 'p1', 'STALE'), completedRow(1, 'p2', 'P2')])
+    const { runtime, spawn } = fakeRuntime()
+    const runner = createAgentRunner({ runtime, store, runId: 'run-1' })
+
+    expect(await runner.runAgent('p2')).toMatchObject({ content: 'P2', cached: true })
+    expect(await runner.runAgent('p1', { retry: true })).toMatchObject({ content: 'fresh:p1', cached: false })
+    const later = await runner.runAgent('p1')
+
+    expect(later).toMatchObject({ content: 'fresh:p1', cached: false })
+    expect(spawn).toHaveBeenCalledTimes(2)
+  })
 })
 
 describe('agent runner team binding', () => {
