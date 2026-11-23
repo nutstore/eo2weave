@@ -1013,6 +1013,9 @@ class SubagentRuntimeImpl implements SubagentRuntime {
     if (!transitioned) {
       return
     }
+    // Stopping is a terminal state exactly like failing, so the board has to hear
+    // about it — otherwise a stopped member's task reads `running` forever.
+    await this.syncTeamTaskOutcome(task, 'blocked', task.error.message)
     this.clearRunTimeout(task)
     await this.completeExecution(task)
     for (const queued of task.queue) {

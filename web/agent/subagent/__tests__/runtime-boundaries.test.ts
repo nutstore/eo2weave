@@ -4,6 +4,7 @@ import type { Message } from '@/agent/message-types'
 import type { StoredSubagentTask } from '@/sqlite/repositories/subagent.repository'
 import type { SubagentCompletion } from '../async-types'
 import { __resetSubagentRuntimeRegistryForTests, getOrCreateSubagentRuntime } from '@/agent/subagent/runtime'
+import { recordTeamTaskOutcome } from '@/agent/team/team-board'
 
 const storage = vi.hoisted(() => {
   const tasks = new Map<string, StoredSubagentTask>()
@@ -22,6 +23,7 @@ const storage = vi.hoisted(() => {
   }
   const completionRepo = {
     find: vi.fn(async (id: string) => structuredClone(completions.get(id) ?? null)),
+    suppressAgent: vi.fn(async () => {}),
     findMetadata: vi.fn(async (id: string) => {
       const row = completions.get(id)
       return row ? { ...structuredClone(row), messages: [] } : null
@@ -73,7 +75,7 @@ vi.mock('@/opfs', () => ({
 vi.mock('@/agent/team/team-board', () => ({
   assignTeamTask: async () => ({ result: { brief: 'assigned task', runGoal: 'goal' } }),
   appendTeamLedger: async () => {},
-  recordTeamTaskOutcome: async () => {},
+  recordTeamTaskOutcome: vi.fn(async () => {}),
   listTeamSlotFiles: async () => [],
   buildTeamTaskSection: ({ runKey }: { runKey: string }) => `Pinned board: ${runKey}`,
 }))
@@ -174,5 +176,27 @@ describe('subagent execution boundaries', () => {
     await vi.waitFor(() => expect(storage.configs).toHaveLength(2))
     expect(storage.configs[1].systemPrompt).toContain('Pinned board: original-board')
     expect(storage.configs[1].toolContext.teamRunKey).toBe('original-board')
+  })
+
+  it('records a stopped team member as blocked instead of leaving its task running', async () => {
+    const runtime = createRuntime()
+    let finish!: () => void
+    storage.run.mockImplementation(
+      async (messages: Message[]) =>
+        new Promise<Message[]>((resolve) => {
+          finish = () => resolve([...messages, answer()])
+        })
+    )
+    const spawned = await runtime.start({ description: 'member', prompt: 'work', task_id: 't-stop' })
+    await vi.waitFor(() => expect(storage.run).toHaveBeenCalled())
+
+    await runtime.stop({ agentId: spawned.agentId, force: true })
+
+    // Stopping is terminal like failing; the board has to hear about it.
+    expect(vi.mocked(recordTeamTaskOutcome)).toHaveBeenCalledWith(
+      expect.objectContaining({ teamRunKey: 'original-board' }),
+      expect.objectContaining({ taskId: 't-stop', status: 'blocked' })
+    )
+    finish()
   })
 })
