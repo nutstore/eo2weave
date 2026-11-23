@@ -132,10 +132,10 @@ describe('directMode tool filtering', () => {
       expect(projectNames, `project must register ${name}`).toContain(name)
       expect(directNames, `direct must NOT register ${name}`).not.toContain(name)
     }
-    // Retained capabilities survive in direct mode. (web_search/web_fetch are
-    // web-bridge tools registered only when the Browser Extension is detected —
-    // absent from this bare registry, so not asserted here.)
-    for (const name of ['run_python', 'bash', 'spawn_subagent', 'manage_schedule']) {
+    // Retained capabilities survive in direct mode. web_search/web_fetch are
+    // registered unconditionally (the extension is optional at runtime), so a
+    // standalone chat keeps them too — a bare registry must expose them.
+    for (const name of ['run_python', 'bash', 'spawn_subagent', 'manage_schedule', 'web_search', 'web_fetch']) {
       expect(directNames, `direct must keep ${name}`).toContain(name)
     }
   })

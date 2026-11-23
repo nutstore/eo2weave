@@ -13,6 +13,7 @@ import { isToolAllowedInMode, isToolAllowedInDirectMode, type AgentMode } from '
 import { getToolPolicy, type ToolPolicy } from './policy-engine'
 import { useSettingsStore } from '@/store/settings.store'
 import { useExtensionStore } from '@/store/extension.store'
+import { isMobileDeviceForExtension } from '@/lib/extension-distribution'
 
 /**
  * Compatibility aliases for renamed tools. The canonical (new) name maps to
@@ -510,27 +511,44 @@ export class ToolRegistry {
   //=============================================================================
   // Web Bridge Tools (Browser Extension)
   //=============================================================================
+  //
+  // DESIGN NOTE — web_search / web_fetch are registered unconditionally,
+  // EXCEPT on mobile.
+  //
+  // They used to be registered only when window.__agentWeb was detected, which
+  // made "extension not installed" indistinguishable from "capability does not
+  // exist": the model never saw the tools, so it could never tell the user that
+  // web access exists and just needs the extension. Now the executors own the
+  // failure path — without the bridge they return a non-retryable
+  // BRIDGE_UNAVAILABLE envelope, and ToolCallDisplay renders that as
+  // ExtensionErrorCard (the install prompt). Trade-off: two tool schemas are
+  // always present in the request.
+  //
+  // Mobile is the one exception: phones/tablets cannot install browser
+  // extensions at all, so an install prompt there is advice the user cannot
+  // act on. Not registering keeps the schemas out of mobile requests and keeps
+  // the agent from attempting a call that can only fail.
 
   /**
-   * Register web_search and web_fetch tools if the Browser Extension bridge
-   * (window.__agentWeb) is detected. Safe to call multiple times.
+   * Ensure web_search and web_fetch are registered (desktop only). Safe to call
+   * multiple times.
+   *
+   * @returns whether the Browser Extension bridge is currently available. The
+   * return value is informational only — registration no longer depends on it.
    */
   registerWebBridgeTools(): boolean {
-    if (!isWebBridgeAvailable()) return false
-    if (this.has('web_search')) return true // Already registered
-
-    this.register(webSearchDefinition, webSearchExecutor)
-    this.register(webFetchDefinition, webFetchExecutor)
-    console.log('[ToolRegistry] ✅ Web bridge tools registered (Browser Extension detected)')
-    return true
-  }
-
-  /**
-   * Unregister web bridge tools (e.g. when extension is disconnected).
-   */
-  unregisterWebBridgeTools(): void {
-    this.unregister('web_search')
-    this.unregister('web_fetch')
+    if (isMobileDeviceForExtension()) return false
+    const available = isWebBridgeAvailable()
+    if (!this.has('web_search')) {
+      this.register(webSearchDefinition, webSearchExecutor)
+      this.register(webFetchDefinition, webFetchExecutor)
+      console.log(
+        available
+          ? '[ToolRegistry] ✅ Web bridge tools registered (Browser Extension detected)'
+          : '[ToolRegistry] ✅ Web bridge tools registered (extension absent — calls will surface the install prompt)'
+      )
+    }
+    return available
   }
 
   //=============================================================================
@@ -854,7 +872,8 @@ export function getToolRegistry(): ToolRegistry {
     instance = new ToolRegistry()
     instance.registerBuiltins()
     instance.registerSkillTools()
-    // Conditionally register web bridge tools (Browser Extension)
+    // Register web bridge tools (always on desktop — the extension itself is
+    // optional at runtime; mobile never registers them)
     instance.registerWebBridgeTools()
     // Conditionally register exec tool (Native Host Tier 1.5)
     instance.registerExecTool()
@@ -865,9 +884,9 @@ export function getToolRegistry(): ToolRegistry {
     // Set up listener for model cache updates (triggers image gen tool re-registration)
     ensureImageGenListener()
   } else {
-    // Try to register web bridge tools on every access (extension may have been
-    // installed after page load). registerWebBridgeTools() is idempotent — it
-    // checks both availability and existing registration.
+    // Ensure web bridge tools are registered on every access. They register
+    // unconditionally on desktop, so this is only a guard for registries
+    // created before the tool set existed in this process.
     instance.registerWebBridgeTools()
     // Also try exec tool (native host may have been installed after page load)
     instance.registerExecTool()
