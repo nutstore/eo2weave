@@ -101,9 +101,9 @@ describe('team board reads', () => {
     expect(resolveVfsTargetMock).toHaveBeenCalledWith(`vfs://team/${RUN_KEY}/manifest.json`, expect.anything(), 'read')
   })
 
-  it('treats a corrupt manifest as unreadable instead of throwing at the caller', async () => {
+  it('throws on a corrupt manifest instead of reporting an empty board', async () => {
     resolveVfsTargetMock.mockResolvedValue(backendWith({ content: '{ broken' }))
-    expect(await readTeamManifest(context())).toBeNull()
+    await expect(readTeamManifest(context())).rejects.toThrow(/invalid JSON/)
   })
 
   it('reads the run goal from 00-brief.md', async () => {
@@ -128,6 +128,15 @@ describe('team board reads', () => {
 
 describe('team board writes', () => {
   beforeEach(() => { resolveVfsTargetMock.mockReset() })
+
+  it('refuses to overwrite a board it could not parse', async () => {
+    // One malformed manifest must fail the spawn: degrading to an empty board
+    // would drop every task, handoff and artifact already on it.
+    const store = boardStore('{ broken')
+    const { error } = await assignTeamTask(context(), { taskId: 't1', goal: 'x' })
+    expect(error).toMatch(/invalid JSON/)
+    expect(store.content).toBe('{ broken')
+  })
 
   it('refuses to write without a run key', async () => {
     await expect(writeTeamManifest(context({ teamRunKey: undefined }), emptyTeamManifest())).rejects.toThrow(/run key/)

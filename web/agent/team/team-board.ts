@@ -84,21 +84,29 @@ async function withTeamBoardMutation<T>(context: ToolContext, operation: () => P
   }
 }
 
-/** Read a run's manifest. `null` means "no board / no manifest" (not an error). */
+/**
+ * Read a run's manifest.
+ *
+ * `null` means "no board / no manifest", which is the normal first-spawn state.
+ * A manifest that exists but cannot be parsed throws instead: both write paths
+ * start from this read, and treating a broken board as empty would silently
+ * overwrite every task on the next spawn.
+ */
 export async function readTeamManifest(context: ToolContext): Promise<TeamManifest | null> {
   const runKey = runKeyOf(context)
   if (!runKey) return null
+  let raw: string
   try {
     const target = await resolveVfsTarget(teamManifestPath(runKey), context, 'read')
     if (target.kind !== 'team') return null
     const result = await target.backend.readFile(target.path, { encoding: 'text' })
-    const raw = typeof result.content === 'string' ? result.content : ''
-    if (!raw.trim()) return emptyTeamManifest()
-    return parseTeamManifest(raw)
+    raw = typeof result.content === 'string' ? result.content : ''
   } catch {
     // A missing file is the normal case on the first spawn of a run.
     return null
   }
+  if (!raw.trim()) return emptyTeamManifest()
+  return parseTeamManifest(raw)
 }
 
 export async function writeTeamManifest(context: ToolContext, manifest: TeamManifest): Promise<void> {
