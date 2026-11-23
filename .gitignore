@@ -109,3 +109,6 @@ browser-extension/public/assets/quickjs/
 
 # Live browser verification artifacts
 output/playwright/
+
+# Working plan documents (local notes, not shipped)
+docs/plans/
