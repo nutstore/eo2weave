@@ -995,6 +995,26 @@ async function runAgentBody(
           // Ignore workspace lookup failures; agent prompt injection will be skipped without projectId.
         }
 
+        // Team board retention. Boards live in this conversation's own workspace
+        // (`workspaces/{conversationId}/team/{runKey}/`), so deleting the
+        // conversation already removes them; this only stops a long chat from
+        // keeping one directory per team run. Run keys are minted here and
+        // nowhere else, so this is the only place the sweep can happen. Fire and
+        // forget: a slow cleanup must never delay the answer.
+        if (resolvedProjectId) {
+          const conversationIdForPrune = conversationId
+          void (async () => {
+            const { pruneTeamBoards } = await import('@/agent/team/team-prune')
+            const report = await pruneTeamBoards(conversationIdForPrune, { activeRunKey: teamRunKey })
+            if (report.removed.length || report.failures.length) {
+              console.log(
+                `[TeamBoard] pruned ${report.removed.length}/${report.scanned} board(s)`,
+                report.failures.length ? `with ${report.failures.length} failure(s)` : '',
+              )
+            }
+          })().catch((error) => console.warn('[TeamBoard] prune failed:', error))
+        }
+
         const activeAgentId = await resolveConversationAgentId(
           resolvedProjectId, conversationId, agentOverrideId, lastUserMessage?.content,
           transientAgent ? { transient: true } : undefined,
