@@ -118,8 +118,10 @@ export function useConversationLogic() {
   // project's Agents must not stay selectable — picking one would insert a
   // mention the target-project routing rejects.
   const catalogMatchesProject = useAgentsStore((s) => s.loadedProjectId === activeProjectId)
-  const projectActiveAgentId =
-    catalogMatchesProject ? useAgentsStore((s) => s.activeAgentId) : null
+  // Subscribe unconditionally: hooks must run in the same order on every
+  // render, so the catalog check picks the value instead of gating the call.
+  const storeActiveAgentId = useAgentsStore((s) => s.activeAgentId)
+  const projectActiveAgentId = catalogMatchesProject ? storeActiveAgentId : null
   const setProjectActiveAgent = useAgentsStore((s) => s.setActiveAgent)
   const createAgent = useAgentsStore((s) => s.createAgent)
   const deleteAgent = useAgentsStore((s) => s.deleteAgent)
