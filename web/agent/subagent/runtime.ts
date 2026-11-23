@@ -370,9 +370,13 @@ class SubagentRuntimeImpl implements SubagentRuntime {
     }
     const declared = agent.meta.capabilities
     try {
+      const declaredClasses = parseCapabilityClasses(declared?.classes)
       return intersectCapabilityClasses(
         declared?.readonly === true ? ['read'] : undefined,
-        parseCapabilityClasses(declared?.classes),
+        // An empty array in meta.json declares nothing, so it must not turn the
+        // actor into a zero-tool member: keep the readonly default. Only a
+        // caller-supplied boundary may mean "no tools at all".
+        declaredClasses?.length ? declaredClasses : undefined,
       )
     } catch (error) {
       // A malformed declaration must not silently widen the surface.
@@ -587,8 +591,10 @@ class SubagentRuntimeImpl implements SubagentRuntime {
       throw new SubagentError((task.error?.code || SubagentErrorCode.RESOURCE_EXHAUSTED) as keyof typeof SubagentErrorCode,
         `subagent finished with status ${task.status}`)
     }
+    // `||`, not `??`: an empty recorded result must not shadow a transcript that
+    // is still in memory (a released task has neither, so this stays empty).
     return { status: 'completed', agentId: task.agentId,
-      content: task.execution?.completion?.result ?? this.extractLatestAssistantContent(task.messages), usage: task.usage }
+      content: task.execution?.completion?.result || this.extractLatestAssistantContent(task.messages), usage: task.usage }
   }
 
   async sendMessage(input: {
@@ -988,7 +994,7 @@ class SubagentRuntimeImpl implements SubagentRuntime {
     const failed = rejected.map((entry) => ({ ...entry, agentId: '' }))
     for (const { task_index, task } of items) {
       if (task.status === 'completed') completed.push({ task_index, agentId: task.agentId,
-        content: task.execution?.completion?.result ?? this.extractLatestAssistantContent(task.messages), usage: task.usage })
+        content: task.execution?.completion?.result || this.extractLatestAssistantContent(task.messages), usage: task.usage })
       else failed.push({ task_index, agentId: task.agentId, reason: task.error?.message || task.status,
         error_code: task.error?.code || 'SUBAGENT_FAILED' })
     }
@@ -2125,7 +2131,10 @@ class SubagentRuntimeImpl implements SubagentRuntime {
           const persisted = item.execution ? await getSubagentCompletionRepository().findMetadata(`${item.agentId}:${execution.executionId}`) : null
           const completion = persisted ?? {
             ...this.makeCompletion(revived, execution),
-            result: revived.status === 'completed' ? this.extractLatestAssistantContent(revived.messages) : '',
+            // Hydration reads metadata only, so the transcript is not loaded
+            // here: an empty result is honest, and readers fall back to the
+            // transcript they load on demand instead of trusting this value.
+            result: '',
             status: 'suppressed' as const,
           }
           execution.completion = completion

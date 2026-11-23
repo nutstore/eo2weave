@@ -156,6 +156,16 @@ describe('subagent execution boundaries', () => {
     expect(result.status).toBe('completed')
   })
 
+  it('keeps read access when an actor declares readonly with an empty class list', async () => {
+    // An empty array in meta.json declares nothing; it must not strip `read`.
+    storage.actorClasses = []
+    storage.actorReadonly = true
+    const runtime = createRuntime()
+    const result = await runtime.spawn({ description: 'actor', prompt: 'inspect', as: 'writer' })
+    expect(storage.configs[0].toolContext.capabilityClasses).toEqual(['read'])
+    expect(result.status).toBe('completed')
+  })
+
   it('keeps the assigned board in prompts and tools when resumed by a later parent run', async () => {
     const runtime = createRuntime('original-board')
     const result = await runtime.spawn({ description: 'member', prompt: 'inspect', task_id: 't1' })
