@@ -27,12 +27,16 @@ export type GuideMethod = 'store' | 'zip'
  * cannot be installed at all. User-agent based on purpose: a narrow
  * desktop window is still a desktop and CAN install the extension, so a
  * viewport check (useMobile) would be wrong here. SSR-safe (returns false).
+ *
+ * iPadOS 13+ is the one case a UA string alone cannot answer: Safari and
+ * Chrome on iPad report a desktop "Macintosh" UA, so the iPad token below only
+ * catches older devices. Touch points distinguish that UA from a real Mac.
  */
 export function isMobileDeviceForExtension(): boolean {
   if (typeof navigator === 'undefined') return false
-  return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(
-    navigator.userAgent
-  )
+  const ua = navigator.userAgent
+  if (/Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(ua)) return true
+  return /Macintosh/i.test(ua) && (navigator.maxTouchPoints ?? 0) > 1
 }
 
 /** Chrome Web Store listing for EO2Weave. */
