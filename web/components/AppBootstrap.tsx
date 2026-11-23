@@ -710,21 +710,20 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
     // alive forever.
     const LATE_PROBE_INTERVAL_MS = 60 * 1000
     let nullProbes = 0
-    let lateTimer: ReturnType<typeof setInterval> | undefined
     const attempt = (delayMs: number) => {
       const timer = setTimeout(() => {
         if (cancelled) return
-        // eslint-disable-next-line no-console
+
         console.info('[SidePanelPackagePrompt] probing for pending package opt-in…')
         import('@/agent/sidepanel-package-prompt')
           .then(({ getPendingPackagePrompt }) => getPendingPackagePrompt())
           .then(status => {
             if (cancelled) return
             if (status && 'package' in status && status.package) {
-              // eslint-disable-next-line no-console
+
               console.info('[SidePanelPackagePrompt] showing opt-in modal for', status.package.id)
               setPackagePrompt(status as PackageOptInStatus)
-              if (lateTimer) clearInterval(lateTimer)
+              clearInterval(lateTimer)
               return
             }
             if (status && 'retryable' in status && status.retryable) {
@@ -749,17 +748,17 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
     // Delay past the project-route navigation so the workspace UI settles
     // first; a consent dialog popping over the loading screen reads as a bug.
     attempt(1200)
-    lateTimer = setInterval(() => {
+    const lateTimer = setInterval(() => {
       if (cancelled) return
       import('@/agent/sidepanel-package-prompt')
         .then(({ getPendingPackagePrompt }) => getPendingPackagePrompt())
         .then(status => {
           if (cancelled) return
           if (status && 'package' in status && status.package) {
-            // eslint-disable-next-line no-console
+
             console.info('[SidePanelPackagePrompt] late-bound probe found a prompt for', status.package.id)
             setPackagePrompt(status as PackageOptInStatus)
-            if (lateTimer) clearInterval(lateTimer)
+            clearInterval(lateTimer)
           }
         })
         .catch(() => {
@@ -769,7 +768,7 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
     return () => {
       cancelled = true
       if (activeTimer) clearTimeout(activeTimer)
-      if (lateTimer) clearInterval(lateTimer)
+      clearInterval(lateTimer)
     }
   }, [initialized, isStorageReady, packagePrompt])
 

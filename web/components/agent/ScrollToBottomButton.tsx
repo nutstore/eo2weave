@@ -145,7 +145,6 @@ export const ScrollToBottomButton = memo(function ScrollToBottomButton({
     }
     // virtuosoRef is a stable React ref object; including it keeps the
     // exhaustive-deps contract honest.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [virtuosoRef])
 
   // ── Virtualized mode: receive Virtuoso's at-bottom state via the hub ──
@@ -247,7 +246,6 @@ export const ScrollToBottomButton = memo(function ScrollToBottomButton({
       }
       el.removeEventListener('keydown', onKeyDown)
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isVirtualized, virtualAtBottomHub, scrollContainerRef, setJumpPendingBoth, virtuosoRef, markUserScrollIntent])
 
   // Clear a still-pending jump timer on unmount (no resync — the component

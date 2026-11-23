@@ -184,7 +184,7 @@ export function PackageOptInModal({ packageInfo, legacy, onClose }: PackageOptIn
       // explanation. The Confirm button retries with the same token first
       // (the background still accepts it within its TTL) and a fresh probe
       // replaces the token when it is truly expired.
-      // eslint-disable-next-line no-console
+
       console.warn('[PackageOptInModal] consent token rejected — retry guidance stays in the modal', {
         packageId: packageInfo.id,
         error: result.error,
@@ -198,7 +198,7 @@ export function PackageOptInModal({ packageInfo, legacy, onClose }: PackageOptIn
       // cooldown, no unmount), show retry guidance, and let the late callback
       // correct the picture when the enable actually lands. A retry clears
       // the message; the Not-now button remains available.
-      // eslint-disable-next-line no-console
+
       console.warn('[PackageOptInModal] enable timed out — waiting for the late outcome; the modal stays open', {
         packageId: packageInfo.id,
       })
@@ -216,7 +216,7 @@ export function PackageOptInModal({ packageInfo, legacy, onClose }: PackageOptIn
       // committing") is the same partial-success shape one step earlier: the
       // config write committed but the catalog-refresh sentinel could not be
       // delivered — the tools register on the next unrelated refresh.
-      // eslint-disable-next-line no-console
+
       console.warn('[PackageOptInModal] enable landed but could not be verified — no cooldown recorded', {
         packageId: packageInfo.id,
         error: result.error,
@@ -228,7 +228,7 @@ export function PackageOptInModal({ packageInfo, legacy, onClose }: PackageOptIn
     } else {
       // Structured failure: log for diagnosis, cool the prompt down so it
       // does not reappear immediately in a broken state, surface the toast.
-      // eslint-disable-next-line no-console
+
       console.error('[PackageOptInModal] enable failed:', {
         packageId: packageInfo.id,
         errorCode: result.errorCode,

@@ -324,7 +324,7 @@ async function flushPendingOpfsProjectDeletions(): Promise<void> {
   const deadline = Date.now() + OPFS_FLUSH_BUDGET_MS
   for (const id of [...pendingOpfsProjectDeletions]) {
     if (Date.now() >= deadline) break
-    // eslint-disable-next-line no-await-in-loop -- sequential retries keep OPFS contention predictable
+    // Sequential retries keep OPFS contention predictable.
     if (await tryDeleteOpfsProjectBounded(id)) {
       pendingOpfsProjectDeletions.delete(id)
     }

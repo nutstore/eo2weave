@@ -91,8 +91,7 @@ async function discoverAndCacheTools(force = false): Promise<WebMCPRegisteredToo
     lastDiscoveryAt = Date.now()
     return useWebMCPStore.getState().getAllTools()
   })()
-  let tracked!: Promise<WebMCPRegisteredTool[]>
-  tracked = discovery.finally(() => {
+  const tracked: Promise<WebMCPRegisteredTool[]> = discovery.finally(() => {
     if (discoveryInFlight === tracked) discoveryInFlight = null
   })
   discoveryInFlight = tracked

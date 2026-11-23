@@ -740,7 +740,6 @@ function SkillInstallView() {
       loginAttemptActiveRef.current = false
       void handleLoginSuccess()
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase, authStatus, handleLoginSuccess, loginGeneration])
 
   // ── Render ─────────────────────────────────────────────────────────

@@ -29,23 +29,25 @@ function withDeadline<T>(
 ): Promise<DeadlineResult<T>> {
   return new Promise<DeadlineResult<T>>((resolve, reject) => {
     let settled = false
-    let timer: ReturnType<typeof setTimeout> | undefined
 
     const settle = (value: DeadlineResult<T>) => {
       if (settled) return
       settled = true
-      if (timer !== undefined) clearTimeout(timer)
+      clearTimeout(timer)
       resolve(value)
     }
 
     const fail = (error: unknown) => {
       if (settled) return
       settled = true
-      if (timer !== undefined) clearTimeout(timer)
+      clearTimeout(timer)
       reject(error)
     }
 
-    timer = setTimeout(() => settle('timeout'), timeoutMs)
+    // Armed only once both closures exist. They run strictly after this line —
+    // from the timer callback or from `task()` below — so the binding is always
+    // initialized when they read it.
+    const timer = setTimeout(() => settle('timeout'), timeoutMs)
 
     try {
       task().then(
