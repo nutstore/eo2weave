@@ -169,6 +169,53 @@ describe('SubagentRepository', () => {
     expect(task.parentToolCallId).toBe('tool-call-2')
 })
 
+  it('persists and restores the execution identity and board binding', async () => {
+    const repo = new SubagentRepository()
+    await repo.saveBatch('w1', [
+      {
+        agentId: 'a1',
+        workspaceId: 'w1',
+        description: 'member',
+        status: 'running',
+        mode: 'act',
+        subagent_type: 'worker',
+        actorId: 'reviewer',
+        role: 'Review the diff.',
+        teamTaskId: 't1',
+        teamRunKey: 'run-1',
+        messages: [],
+        queue: [],
+        stopped: false,
+        created_at: 1,
+        updated_at: 2,
+        last_activity_at: 2,
+      },
+    ])
+
+    const [sql, params] = hoisted.db.execute.mock.calls[0] as [string, unknown[]]
+    expect(sql).toContain('actor_id')
+    expect(sql).toContain('team_run_key = excluded.team_run_key')
+    // agent_id … team_run_key are bound in insert order.
+    expect(params.slice(9, 13)).toEqual(['reviewer', 'Review the diff.', 't1', 'run-1'])
+
+    hoisted.db.queryAll.mockResolvedValueOnce([
+      {
+        execution_json: null, agent_id: 'a1', workspace_id: 'w1', name: null, description: 'member',
+        status: 'failed', mode: 'act', subagent_type: 'worker', parent_tool_call_id: null,
+        timeout_ms: null, actor_id: 'reviewer', role: 'Review the diff.', team_task_id: 't1',
+        team_run_key: 'run-1', messages_json: '[]', queue_json: '[]', usage_json: null,
+        error_json: null, stopped: 0, created_at: 1, updated_at: 2, last_activity_at: 2,
+      },
+    ])
+    const [task] = await repo.findMetadataByWorkspaceId('w1')
+    expect(task).toMatchObject({
+      actorId: 'reviewer',
+      role: 'Review the diff.',
+      teamTaskId: 't1',
+      teamRunKey: 'run-1',
+    })
+  })
+
   describe('findMetadataByWorkspaceId', () => {
     it('never selects the transcripts', async () => {
       // Hydration only needs labels and status. Selecting `*` pulled 130 MB of

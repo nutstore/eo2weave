@@ -180,7 +180,8 @@ export interface SpawnSubagentInput {
   as?: string | null
   /**
    * Inline role statement for an ephemeral member. Reaches the model through the
-   * system prompt and is never persisted, so it creates no agent directory.
+   * system prompt and is stored on the subagent task row, so it creates no agent
+   * directory.
    */
   role?: string
   /** Capability boundary for this execution (merged with the actor's meta). */

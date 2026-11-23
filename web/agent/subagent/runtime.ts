@@ -2120,6 +2120,12 @@ class SubagentRuntimeImpl implements SubagentRuntime {
           subagent_type: (item.subagent_type as SubagentType | undefined) ?? 'general-purpose',
           parentToolCallId: item.parentToolCallId,
           capabilityClasses: item.execution?.capabilityClasses,
+          // Identity is metadata, not live state: a restored member must keep its
+          // persona and its board task instead of resuming anonymously.
+          actorId: item.actorId ?? undefined,
+          role: item.role,
+          teamTaskId: item.teamTaskId,
+          teamRunKey: item.teamRunKey,
         }
         const execution: SubagentExecution = item.execution
           ? { ...item.execution }
@@ -2192,6 +2198,10 @@ class SubagentRuntimeImpl implements SubagentRuntime {
     subagent_type: SubagentType
     parentToolCallId?: string
     timeout_ms?: number
+    actorId?: string | null
+    role?: string
+    teamTaskId?: string
+    teamRunKey?: string
   } {
     return {
       agentId: task.agentId,
@@ -2215,6 +2225,10 @@ class SubagentRuntimeImpl implements SubagentRuntime {
       subagent_type: task.subagent_type,
       parentToolCallId: task.parentToolCallId,
       timeout_ms: task.timeout_ms,
+      actorId: task.actorId,
+      role: task.role,
+      teamTaskId: task.teamTaskId,
+      teamRunKey: task.teamRunKey,
     }
   }
 

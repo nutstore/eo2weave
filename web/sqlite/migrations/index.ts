@@ -293,6 +293,22 @@ function repairSubagentExecutions(db: any): void {
 }
 
 /**
+ * Ensure subagent_tasks carries the execution identity.
+ *
+ * Hydration reads only metadata, so a member restored after a reload rebuilds
+ * its loop from the row: without these columns it resumes anonymous (no
+ * persona) and its outcome never reaches the team board it was spawned on.
+ */
+function repairSubagentIdentityColumns(db: any): void {
+  for (const column of ['actor_id', 'role', 'team_task_id', 'team_run_key']) {
+    if (!subagentTasksColumnExists(db, column)) {
+      db.exec(`ALTER TABLE subagent_tasks ADD COLUMN ${column} TEXT`)
+    }
+  }
+  bumpUserVersionFloor(db, 26)
+}
+
+/**
  * Workflow-script persistence.
  *
  * workflow_agent_steps doubles as the replay cache: completed steps are
@@ -628,6 +644,11 @@ export const migrations: Migration[] = [
       PRAGMA user_version = 25;
     `,
   },
+  {
+    version: 26,
+    name: 'add_subagent_team_identity',
+    up: repairSubagentIdentityColumns,
+  },
 ]
 
 /** Highest migration in the registry — where an up-to-date database ends. */
@@ -788,6 +809,11 @@ export async function initializeSchema(
   // v21 managed MCP task tables and mcp_servers.protocol_mode.
   repairManagedMcpTasks(db)
   repairSubagentExecutions(db)
+
+  // v26 subagent_tasks execution identity. Same reasoning: the columns carry a
+  // member's persona and board task, and a database that reports v26 without
+  // them would silently resume every member anonymously.
+  repairSubagentIdentityColumns(db)
 
   // v23 workflow_agent_steps. Same reasoning as above: the table is created by
   // DDL that can race the user_version bump, and a missing table would surface

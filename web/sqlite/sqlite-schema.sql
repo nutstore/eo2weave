@@ -101,6 +101,12 @@ CREATE TABLE IF NOT EXISTS subagent_tasks (
     subagent_type TEXT NOT NULL DEFAULT 'general-purpose',
     parent_tool_call_id TEXT,
     timeout_ms INTEGER,
+    -- Execution identity. Persisted so a member restored after a reload keeps
+    -- its persona and its board task instead of resuming anonymously.
+    actor_id TEXT,
+    role TEXT,
+    team_task_id TEXT,
+    team_run_key TEXT,
     execution_json TEXT,
     messages_json TEXT NOT NULL DEFAULT '[]',
     queue_json TEXT NOT NULL DEFAULT '[]',

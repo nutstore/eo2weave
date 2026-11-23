@@ -178,6 +178,38 @@ describe('subagent execution boundaries', () => {
     expect(storage.configs[1].toolContext.teamRunKey).toBe('original-board')
   })
 
+  it('keeps a member identity and board task on the stored row', async () => {
+    const runtime = createRuntime('original-board')
+    const result = await runtime.spawn({
+      description: 'member', prompt: 'inspect', as: 'reviewer', role: 'Review the diff.', task_id: 't1',
+    })
+    const stored = storage.tasks.get(result.agentId)!
+    expect(stored).toMatchObject({
+      actorId: 'reviewer',
+      role: 'Review the diff.',
+      teamTaskId: 't1',
+      teamRunKey: 'original-board',
+    })
+  })
+
+  it('restores a reloaded member identity and board task on resume', async () => {
+    const runtime = createRuntime('original-board')
+    const result = await runtime.spawn({
+      description: 'member', prompt: 'inspect', as: 'reviewer', role: 'Review the diff.', task_id: 't1',
+    })
+
+    // A reload drops the in-memory task and rebuilds it from metadata only.
+    __resetSubagentRuntimeRegistryForTests()
+    const reloaded = createRuntime('next-board')
+    await reloaded.resume({ agentId: result.agentId, prompt: 'continue' })
+    await vi.waitFor(() => expect(storage.configs).toHaveLength(2))
+    const config = storage.configs[1]
+    expect(config.toolContext.currentAgentId).toBe('reviewer')
+    expect(config.toolContext.teamTaskId).toBe('t1')
+    expect(config.toolContext.teamRunKey).toBe('original-board')
+    expect(config.systemPrompt).toContain('Review the diff.')
+  })
+
   it('records a stopped team member as blocked instead of leaving its task running', async () => {
     const runtime = createRuntime()
     let finish!: () => void

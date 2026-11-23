@@ -44,6 +44,46 @@ describe('sqlite-wasm schema initialization', () => {
     }
   )
 
+  it('adds the subagent identity columns to a v25 database that lacks them', async () => {
+    // A member restored after a reload rebuilds its loop from these columns:
+    // without them it resumes anonymous and its outcome never reaches its board.
+    db = new sqlite.oo1.DB(':memory:')
+    db.exec(schema)
+    db.exec('DROP TABLE subagent_tasks')
+    db.exec(`
+      CREATE TABLE subagent_tasks (
+        agent_id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        name TEXT,
+        description TEXT NOT NULL,
+        status TEXT NOT NULL,
+        mode TEXT NOT NULL DEFAULT 'act',
+        subagent_type TEXT NOT NULL DEFAULT 'general-purpose',
+        parent_tool_call_id TEXT,
+        timeout_ms INTEGER,
+        execution_json TEXT,
+        messages_json TEXT NOT NULL DEFAULT '[]',
+        queue_json TEXT NOT NULL DEFAULT '[]',
+        usage_json TEXT,
+        error_json TEXT,
+        stopped INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        last_activity_at INTEGER NOT NULL
+      )
+    `)
+    db.exec('PRAGMA user_version = 25')
+
+    await initializeSchema(db)
+
+    expect(db.exec({ sql: 'PRAGMA user_version', returnValue: 'resultRows' })).toEqual([
+      [LATEST_SCHEMA_VERSION],
+    ])
+    expect(() =>
+      db.exec('SELECT actor_id, role, team_task_id, team_run_key FROM subagent_tasks LIMIT 0')
+    ).not.toThrow()
+  })
+
   it('strips stored envelopes without tripping over a message row that is not JSON', async () => {
     db = new sqlite.oo1.DB(':memory:')
     db.exec(schema)
