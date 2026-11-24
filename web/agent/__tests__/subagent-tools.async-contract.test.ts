@@ -3,7 +3,6 @@ import { getBuiltinToolNames, getToolRegistry } from '../tool-registry'
 import { getUniversalSystemPrompt } from '../prompts/universal-system-prompt'
 import { RecommendationEngine } from '../tools/tool-recommendation'
 import { spawnSubagentDefinition, subagentPromptDoc } from '../tools/subagent.tool'
-import { delegateToDefinition } from '../tools/delegate.tool'
 
 describe('event-driven subagent tool surface', () => {
   it('offers asynchronous delegation and task controls without an explicit waiting tool', () => {
@@ -28,7 +27,6 @@ describe('event-driven subagent tool surface', () => {
     const descriptions = [
       getUniversalSystemPrompt(), subagentPromptDoc.lines.join('\n'),
       spawnSubagentDefinition.function.description,
-      delegateToDefinition.function.description,
     ]
     for (const description of descriptions) expect(description).not.toContain('wait_subagents')
     expect(spawnSubagentDefinition.function.description).toMatch(/completion.*notification/i)

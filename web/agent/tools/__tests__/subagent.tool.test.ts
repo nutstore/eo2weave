@@ -18,7 +18,6 @@ function createMockRuntime(): SubagentRuntime {
   return {
     acknowledge: vi.fn().mockResolvedValue(undefined),
     start: vi.fn().mockResolvedValue({ agentId: 'subagent_1', status: 'pending', description: 'task' }),
-    batchStart: vi.fn().mockResolvedValue({ accepted: [{ task_index: 0, agentId: 'subagent_1', status: 'pending', description: 't1' }], rejected: [] }),
     spawn: vi.fn().mockResolvedValue({
       status: 'completed',
       agentId: 'subagent_1',
@@ -64,10 +63,6 @@ function createMockRuntime(): SubagentRuntime {
         { role: 'tool', content: 'src', tool_name: 'ls', tool_call_id: 'call-1' },
         { role: 'assistant', content: null },
       ],
-    }),
-    batchSpawn: vi.fn().mockResolvedValue({
-      completed: [{ task_index: 0, agentId: 'subagent_1', content: 'done' }],
-      failed: [],
     }),
     shutdown: vi.fn(),
   }

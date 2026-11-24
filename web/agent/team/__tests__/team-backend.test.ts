@@ -134,9 +134,11 @@ describe('TeamBackend directory operations', () => {
     await expect(backend.readFile('by/member-a/keep.md')).rejects.toThrow('Missing entry')
   })
 
-  it('refuses direct deletion of the backend root', async () => {
-    await expect((backend as VfsBackend).deleteDir!('')).rejects.toThrow(/root/i)
-    expect(tree['manifest.json']).toBe('{}')
+  it('retiring the board (root delete) clears every entry but keeps the run directory', async () => {
+    const result = await (backend as VfsBackend).deleteDir!('')
+    expect(result.deletedFiles).toHaveLength(5)
+    expect(result.deletedDirs).toEqual([''])
+    expect(tree).toEqual({})
   })
 
   it('rejects recursive deletion outside a member slot before touching storage', async () => {

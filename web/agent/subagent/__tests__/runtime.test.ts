@@ -624,31 +624,11 @@ describe('subagent runtime', () => {
     expect(hoisted.repo.acknowledge).toHaveBeenCalledTimes(1)
   })
 
-  it('batch accepts valid members independently while enforcing the batch limit', async () => {
-    const resolvers: Array<(messages: Message[]) => void> = []
-    hoisted.setRunImpl(() => new Promise((resolve) => { resolvers.push(resolve) }))
-    const runtime = createRuntime('async-batch', [])
-    const result = await runtime.batchStart({ tasks: [
-      { description: 'one', prompt: 'work' },
-      { description: '', prompt: 'invalid' },
-      { description: 'two', prompt: 'work' },
-    ], max_concurrency: 1 })
-    expect(result.accepted.map((r) => r.task_index)).toEqual([0, 2])
-    expect(result.rejected.map((r) => r.task_index)).toEqual([1])
-    await vi.advanceTimersByTimeAsync(1)
-    expect(resolvers).toHaveLength(1)
-    resolvers[0]([createAssistantMessage('one')])
-    await vi.advanceTimersByTimeAsync(1)
-    expect(resolvers).toHaveLength(2)
-    resolvers[1]([createAssistantMessage('two')])
-    await vi.advanceTimersByTimeAsync(1)
-  })
-
   it('keeps the runtime cap of five across background batches and individual starts', async () => {
     const resolvers: Array<(messages: Message[]) => void> = []
     hoisted.setRunImpl(() => new Promise((resolve) => { resolvers.push(resolve) }))
     const runtime = createRuntime('async-global-cap', [])
-    await runtime.batchStart({ tasks: Array.from({ length: 5 }, (_, i) => ({ description: String(i), prompt: 'work' })) })
+    for (const [i] of Array.from({ length: 5 }, (_, i) => [i])) await runtime.start({ description: String(i), prompt: 'work' })
     await runtime.start({ description: 'six', prompt: 'work' })
     await runtime.start({ description: 'seven', prompt: 'work' })
     await vi.advanceTimersByTimeAsync(0)
@@ -667,7 +647,7 @@ describe('subagent runtime', () => {
     const resolvers: Array<(messages: Message[]) => void> = []
     hoisted.setRunImpl(() => new Promise((resolve) => { resolvers.push(resolve) }))
     const runtime = createRuntime('async-queued-freeze', [])
-    await runtime.batchStart({ tasks: Array.from({ length: 6 }, (_, i) => ({ description: String(i), prompt: 'work' })) })
+    for (const [i] of Array.from({ length: 6 }, (_, i) => [i])) await runtime.start({ description: String(i), prompt: 'work' })
     await vi.advanceTimersByTimeAsync(0)
     const originalProvider = hoisted.loopConfigs[0].provider
     createRuntime('async-queued-freeze', [])
@@ -926,7 +906,7 @@ describe('subagent runtime', () => {
     getOrCreateSubagentRuntime({ workspaceId: 'async-callback-slots', provider: {} as any, toolRegistry: {} as any,
       contextManager: { getConfig: () => ({ maxContextTokens: 1000, reserveTokens: 100 }) } as any,
       baseToolContext: { directoryHandle: null }, onCompletionReady: ready })
-    await runtime.batchStart({ tasks: Array.from({ length: 6 }, (_, i) => ({ description: String(i), prompt: 'work' })) })
+    for (const [i] of Array.from({ length: 6 }, (_, i) => [i])) await runtime.start({ description: String(i), prompt: 'work' })
     await vi.advanceTimersByTimeAsync(0)
     expect(ready).toHaveBeenCalledTimes(6)
   })

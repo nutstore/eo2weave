@@ -1,4 +1,4 @@
-import type { SubagentAcceptedReceipt, SubagentBatchAcceptance } from '@/agent/subagent/async-types'
+import type { SubagentAcceptedReceipt } from '@/agent/subagent/async-types'
 import type { TeamTaskHandoff } from '@/agent/team/team-manifest'
 /**
  * Tool system types for Agent tool calling.
@@ -197,11 +197,6 @@ export interface SpawnSubagentInput {
   parentToolCallId?: string
 }
 
-export interface BatchSpawnSubagentInput {
-  tasks: Array<SpawnSubagentInput>
-  max_concurrency?: number
-}
-
 export interface SpawnSubagentResult {
   status: 'completed'
   agentId: string
@@ -224,7 +219,6 @@ export interface SubagentTraceMessage {
 export interface SubagentRuntime {
   acknowledge(input: { agentId: string; executionId: string }): Promise<void>
   start(input: SpawnSubagentInput): Promise<SubagentAcceptedReceipt>
-  batchStart(input: BatchSpawnSubagentInput): Promise<SubagentBatchAcceptance>
   spawn(input: SpawnSubagentInput, options?: { signal?: AbortSignal }): Promise<SpawnSubagentResult>
   sendMessage(input: {
     to: string
@@ -292,20 +286,6 @@ export interface SubagentRuntime {
     offset: number
     truncated: boolean
     messages: SubagentTraceMessage[]
-  }>
-  batchSpawn(input: BatchSpawnSubagentInput): Promise<{
-    completed: Array<{
-      task_index: number
-      agentId: string
-      content: string
-      usage?: SubagentTaskUsage
-    }>
-    failed: Array<{
-      task_index: number
-      agentId: string
-      reason: string
-      error_code: string
-    }>
   }>
   /** Graceful shutdown: marks all active tasks as failed(SESSION_INTERRUPTED). */
   shutdown(): void

@@ -1,7 +1,7 @@
 import { SubagentStreamTrace } from './stream-trace'
 import type { DraftAssistantEvent } from '@/store/draft-assistant'
 import type {
-  SubagentAcceptedReceipt, SubagentBatchAcceptance, SubagentCompletion,
+  SubagentAcceptedReceipt, SubagentCompletion,
   SubagentContinuation, SubagentExecutionMetadata,
 } from './async-types'
 import { useSubagentTaskStore } from '@/store/subagent-task.store'
@@ -12,7 +12,6 @@ import { createUserMessage, generateId, type Message } from '@/agent/message-typ
 import type { PiAIProvider } from '@/agent/llm/pi-ai-provider'
 import type { ToolRegistry } from '@/agent/tool-registry'
 import type {
-  BatchSpawnSubagentInput,
   SpawnSubagentInput,
   SpawnSubagentResult,
   SubagentRuntime,
@@ -965,53 +964,6 @@ class SubagentRuntimeImpl implements SubagentRuntime {
       })),
       total: all.length,
     }
-  }
-
-  private async createBatch(input: BatchSpawnSubagentInput, isAsync: boolean): Promise<{
-    items: Array<{ task_index: number; task: SubagentTaskInternal }>
-    rejected: SubagentBatchAcceptance['rejected']
-  }> {
-    const items: Array<{ task_index: number; task: SubagentTaskInternal }> = []
-    const rejected: SubagentBatchAcceptance['rejected'] = []
-    for (const [task_index, spec] of (input.tasks || []).entries()) {
-      try { items.push({ task_index, task: await this.createTask(spec, isAsync) }) }
-      catch (error) { rejected.push({ task_index, reason: error instanceof Error ? error.message : String(error),
-        error_code: error instanceof SubagentError ? error.code : 'BATCH_SPAWN_FAILED' }) }
-    }
-    return { items, rejected }
-  }
-
-  private runBatch(items: Array<{ task_index: number; task: SubagentTaskInternal }>, limit?: number): Promise<void> {
-    const concurrency = Number.isFinite(limit) ? Math.max(1, Math.min(5, Math.floor(Number(limit)))) : 5
-    let cursor = 0
-    return Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, async () => {
-      while (cursor < items.length) {
-        const item = items[cursor++]
-        try { await this.ensureProcessing(item.task) }
-        catch (error) { console.error('[SubagentRuntime] batch execution failed', item.task.agentId, error) }
-      }
-    })).then(() => undefined)
-  }
-
-  async batchStart(input: BatchSpawnSubagentInput): Promise<SubagentBatchAcceptance> {
-    const { items, rejected } = await this.createBatch(input, true)
-    const accepted = items.map(({ task_index, task }) => ({ ...this.receipt(task), task_index }))
-    void this.runBatch(items, input.max_concurrency).catch((error) => console.error('[SubagentRuntime] batch failed', error))
-    return { accepted, rejected }
-  }
-
-  async batchSpawn(input: BatchSpawnSubagentInput): ReturnType<SubagentRuntime['batchSpawn']> {
-    const { items, rejected } = await this.createBatch(input, false)
-    await this.runBatch(items, input.max_concurrency)
-    const completed: Awaited<ReturnType<SubagentRuntime['batchSpawn']>>['completed'] = []
-    const failed = rejected.map((entry) => ({ ...entry, agentId: '' }))
-    for (const { task_index, task } of items) {
-      if (task.status === 'completed') completed.push({ task_index, agentId: task.agentId,
-        content: task.execution?.completion?.result || this.extractLatestAssistantContent(task.messages), usage: task.usage })
-      else failed.push({ task_index, agentId: task.agentId, reason: task.error?.message || task.status,
-        error_code: task.error?.code || 'SUBAGENT_FAILED' })
-    }
-    return { completed, failed: failed.sort((a, b) => a.task_index - b.task_index) }
   }
 
   private async killTask(

@@ -41,11 +41,6 @@ export interface SubagentAcceptedReceipt {
   name?: string
 }
 
-export interface SubagentBatchAcceptance {
-  accepted: Array<SubagentAcceptedReceipt & { task_index: number }>
-  rejected: Array<{ task_index: number; reason: string; error_code: string }>
-}
-
 /** An immutable execution snapshot; task rows can move on to a later attempt. */
 export interface SubagentCompletion {
   id: string

@@ -109,7 +109,24 @@ export class TeamBackend implements VfsBackend {
 
   async deleteDir(path: string): Promise<{ deletedFiles: string[]; deletedDirs: string[] }> {
     const normalized = splitPath(path).join('/')
-    if (!normalized) throw new Error('Cannot delete the team board root')
+    if (!normalized) {
+      // Empty-root delete = retire this run's board: clear every entry but keep
+      // the run directory handle itself (OPFS cannot remove the directory this
+      // backend was handed). The lead does this when a run reaches its terminal
+      // state; the shared `team/` parent is never reachable through a run
+      // backend, so other runs' boards are untouched.
+      const provider = fromFileSystemHandle(this.root)
+      const entries = await this.listDir('', { recursive: true })
+      for (const entry of entries.filter(e => e.kind === 'file').map(e => e.path)) {
+        await provider.remove(entry)
+      }
+      for (const dir of entries.filter(e => e.kind === 'directory')
+        .sort((a, b) => b.path.split('/').length - a.path.split('/').length)
+        .map(e => e.path)) {
+        await provider.remove(dir)
+      }
+      return { deletedFiles: entries.filter(e => e.kind === 'file').map(e => e.path), deletedDirs: [''] }
+    }
 
     const provider = fromFileSystemHandle(this.root)
     if ((await provider.stat(normalized)).kind === 'file') {

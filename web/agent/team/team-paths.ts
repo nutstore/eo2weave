@@ -18,21 +18,12 @@
  * resolver decides *how* to reach a path; this decides *whether it may*.
  */
 
-export const TEAM_NAMESPACE = 'team'
 export const TEAM_BRIEF_FILE = '00-brief.md'
 export const TEAM_MANIFEST_FILE = 'manifest.json'
 export const TEAM_LEDGER_FILE = '_ledger.jsonl'
 export const TEAM_MEMBERS_DIR = 'by'
 
 /** Files only the lead may write, because a second writer would mean two truths. */
-export const TEAM_RESERVED_FILES: readonly string[] = [TEAM_BRIEF_FILE, TEAM_MANIFEST_FILE, TEAM_LEDGER_FILE]
-
-export interface TeamPath {
-  runKey: string
-  relativePath: string
-  segments: string[]
-}
-
 export type TeamAccess = { allowed: true } | { allowed: false; reason: string }
 
 const RUN_KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
@@ -47,43 +38,6 @@ export function isValidTeamActorId(actorId: string): boolean {
 }
 
 /**
- * Split a team path into run key + relative path.
- *
- * Returns null for anything malformed rather than throwing: a bad path from a
- * model is a normal event, and callers need a clean "unknown path" branch.
- */
-export function parseTeamPath(raw: string): TeamPath | null {
-  if (typeof raw !== 'string') return null
-  let value = raw.trim()
-  if (value.startsWith('vfs://')) value = value.slice('vfs://'.length)
-  const parts = value.split('/').filter((part, index, all) => !(part === '' && index === all.length - 1))
-  if (parts.length < 2) return null
-  if (parts[0] !== TEAM_NAMESPACE) return null
-  const runKey = parts[1]!
-  if (!isValidTeamRunKey(runKey)) return null
-  const segments = parts.slice(2)
-  if (segments.length === 0) return null
-  for (const segment of segments) {
-    if (!segment || segment === '.' || segment === '..') return null
-    // Backslashes would let a caller smuggle a separator past one layer.
-    if (segment.includes('\\')) return null
-  }
-  return { runKey, relativePath: segments.join('/'), segments }
-}
-
-export function formatTeamPath(runKey: string, relativePath: string): string {
-  return `vfs://${TEAM_NAMESPACE}/${runKey}/${relativePath.replace(/^\/+/, '')}`
-}
-
-export function isReservedTeamFile(relativePath: string): boolean {
-  return TEAM_RESERVED_FILES.includes(relativePath.replace(/^\/+/, ''))
-}
-
-export function teamActorDir(actorId: string): string {
-  return `${TEAM_MEMBERS_DIR}/${actorId}`
-}
-
-/**
  * The one directory a member may write to.
  *
  * A named actor gets `by/{actorId}/`; an anonymous member gets `by/{taskId}/`,
@@ -95,9 +49,9 @@ export function teamActorDir(actorId: string): string {
  */
 export function teamMemberSlot(input: { actorId?: string | null; taskId?: string | null }): string | null {
   const actorId = input.actorId?.trim()
-  if (actorId && isValidTeamActorId(actorId)) return teamActorDir(actorId)
+  if (actorId && isValidTeamActorId(actorId)) return `${TEAM_MEMBERS_DIR}/${actorId}`
   const taskId = input.taskId?.trim()
-  if (taskId && isValidTeamActorId(taskId)) return teamActorDir(taskId)
+  if (taskId && isValidTeamActorId(taskId)) return `${TEAM_MEMBERS_DIR}/${taskId}`
   return null
 }
 
