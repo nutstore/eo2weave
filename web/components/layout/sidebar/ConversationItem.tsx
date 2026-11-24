@@ -12,6 +12,7 @@ import {
   Archive,
   ArchiveRestore,
   Sparkles,
+  Copy,
 } from 'lucide-react'
 import {
   BrandButton,
@@ -43,6 +44,7 @@ export interface ConversationItemProps extends ConversationItemData {
   onDeleteClick: (id: string, x: number, y: number) => void
   onTogglePin: (id: string) => void
   onExport: (id: string) => void
+  onCopyId: (id: string) => void
   onArchive: (id: string, archived: boolean) => void
   onDelete: (id: string) => void
   onGenerateTitle: (id: string) => void
@@ -116,6 +118,7 @@ export const ConversationItem = memo(function ConversationItem({
   onDeleteClick: _onDeleteClick,
   onTogglePin,
   onExport,
+  onCopyId,
   onArchive,
   onDelete,
   onGenerateTitle,
@@ -267,6 +270,12 @@ export const ConversationItem = memo(function ConversationItem({
         >
           <Download className="mr-2 h-3.5 w-3.5" />
           {t('sidebar.exportWorkspace') || 'Export'}
+        </ContextMenuItem>
+        <ContextMenuItem
+          onClick={() => onCopyId(id)}
+        >
+          <Copy className="mr-2 h-3.5 w-3.5" />
+          {t('sidebar.copyConversationId')}
         </ContextMenuItem>
         <ContextMenuItem
           onClick={() => onGenerateTitle(id)}
