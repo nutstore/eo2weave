@@ -54,10 +54,17 @@ import { Lightbox } from './Lightbox'
 
 // ─── Types ────────────────────────────────────────────────────────────
 
-/** Format token count: 999 → "999", 1234 → "1.2K" */
+/**
+ * Format token count: 999 → "999", 1234 → "1.23K", 1_234_567 → "1.23M".
+ *
+ * Must stay in the same units as ConversationUsageBar's formatter: a turn's
+ * accumulated cache reads can exceed 1M (one read per LLM call), and rendering
+ * that as "2073.6K" reads as a broken number.
+ */
 function formatTokens(n: number): string {
   if (n < 1000) return String(n)
-  return (n / 1000).toFixed(n < 10000 ? 2 : 1) + 'K'
+  if (n < 1_000_000) return (n / 1000).toFixed(n < 10_000 ? 2 : 1) + 'K'
+  return (n / 1_000_000).toFixed(2) + 'M'
 }
 
 interface StreamingState {
