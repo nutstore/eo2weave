@@ -166,6 +166,8 @@ export const agent = {
     toolStatus: {
         running: "실행 중…",
         reading: "읽는 중…",
+        searchExpandSameLine: "다른 줄이 없습니다 — 나머지 일치는 위 줄에 있습니다.",
+        searchExpandNoBackend: "더 많은 일치 항목을 불러올 수 없습니다 — 이 경로에 파일 접근 권한이 없습니다.",
         loadingLargeResultSet: "큰 결과 집합 불러오는 중…",
         stateRunning: "실행 중",
         stateStarting: "시작 중(포트 준비 안 됨)",

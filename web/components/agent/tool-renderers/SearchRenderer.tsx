@@ -12,10 +12,9 @@ import { CopyIconButton } from '../CopyIconButton'
 import type { ToolEnvelopeError } from '@/agent/tools/tool-envelope'
 import { registerRenderer } from './registry'
 import type { ToolRenderCtx } from './types'
-import { getSearchWorkerManager } from '@/workers/search-worker-manager'
 import type { SearchHit } from '@/workers/search-worker-manager'
-import { getRuntimeHandlesForProject } from '@/native-fs'
-import { useProjectStore } from '@/store/project.store'
+import { lookupFileSearchHits } from '@/vfs/search-operation'
+import { useWorkspaceStore } from '@/store/workspace.store'
 import { useFolderAccessStore } from '@/store/folder-access.store'
 import { readAssetBlob } from '../asset-utils'
 
@@ -217,7 +216,9 @@ interface FileExpandState {
 /**
  * Renders a single file's search results.
  * - Always shows the best preview line (from file.bestPreview/bestLine).
- * - On click "N more lines", calls the search worker to load all hits for this single file.
+ * - On click "N more lines", re-runs the search for this single file through
+ *   `lookupFileSearchHits` (worker for handle-backed roots, WorkspaceRuntime
+ *   for native-host roots).
  */
 function FileResultItem({ file, searchCtx, query }: { file: FileResult; searchCtx: ToolRenderCtx; query: string }) {
   const t = useT()
@@ -233,49 +234,34 @@ function FileResultItem({ file, searchCtx, query }: { file: FileResult; searchCt
       const caseSensitive = args.case_sensitive === true
       const wholeWord = args.whole_word === true
 
-      // Resolve the directory handle for the file's root
-      // Use project store (has activeProjectId) and folder-access store (has handle map)
-      const projectId = useProjectStore.getState().activeProjectId
-      const allHandles = projectId ? getRuntimeHandlesForProject(projectId) : new Map<string, FileSystemDirectoryHandle>()
+      // Route through the same backend selection as the search tool instead of
+      // assuming a FileSystemDirectoryHandle: native-host roots deliberately
+      // expose no handle, so a handle-only lookup always failed with
+      // "No workspace handle" for disk-backed projects.
+      const hits = await lookupFileSearchHits(
+        file.path,
+        {
+          query: typeof args.query === 'string' ? args.query : '',
+          regex: useRegex,
+          caseSensitive,
+          wholeWord,
+          maxResults: MAX_LINES_PER_FILE,
+          deadlineMs: 15000,
+        },
+        {
+          // A conversation *is* a workspace in this app.
+          workspaceId: searchCtx.conversationId ?? useWorkspaceStore.getState().activeWorkspaceId,
+          directoryHandle: useFolderAccessStore.getState().getCurrentHandle(),
+        },
+      )
 
-      // Determine root name and sub-path from the file path
-      const segments = file.path.split('/')
-      let dirHandle: FileSystemDirectoryHandle | null = null
-      let filePath: string = file.path
-
-      if (allHandles.size > 0 && segments.length > 0) {
-        const maybeRoot = segments[0]
-        if (allHandles.has(maybeRoot)) {
-          dirHandle = allHandles.get(maybeRoot)!
-          filePath = segments.slice(1).join('/')
-        }
-      }
-
-      // Fallback: try single-root handle from folder-access store
-      if (!dirHandle) {
-        const dh = useFolderAccessStore.getState().getCurrentHandle()
-        if (dh) dirHandle = dh
-      }
-
-      if (!dirHandle) {
-        setExpandState(prev => ({ ...prev, loading: false, error: 'No workspace handle' }))
+      if (!hits) {
+        setExpandState(prev => ({ ...prev, loading: false, error: t('agent.toolStatus.searchExpandNoBackend') }))
         return
       }
 
-      const manager = getSearchWorkerManager()
-      const result = await manager.searchInDirectory(dirHandle, {
-        query: typeof args.query === 'string' ? args.query : '',
-        path: filePath,
-        regex: useRegex,
-        caseSensitive,
-        wholeWord,
-        maxResults: MAX_LINES_PER_FILE,
-        contextLines: 0,
-        deadlineMs: 15000,
-      })
-
       // Filter out the best line (already shown)
-      const extra = result.results.filter(h => h.line !== file.bestLine)
+      const extra = hits.filter(h => h.line !== file.bestLine)
       setExpandState({ loaded: true, loading: false, expanded: true, extraHits: extra })
     } catch (err) {
       setExpandState(prev => ({
@@ -284,7 +270,7 @@ function FileResultItem({ file, searchCtx, query }: { file: FileResult; searchCt
         error: err instanceof Error ? err.message : 'Failed to load',
       }))
     }
-  }, [expandState.loading, expandState.loaded, file.path, file.bestLine, searchCtx.args, query])
+  }, [expandState.loading, expandState.loaded, file.path, file.bestLine, searchCtx.args, searchCtx.conversationId, t])
 
   const titleBadge = file.titleMatch === 'exact'
     ? <span className="text-[10px] bg-yellow-100 dark:bg-yellow-900/30 text-yellow-700 dark:text-yellow-400 px-1 rounded">exact title</span>
@@ -350,6 +336,14 @@ function FileResultItem({ file, searchCtx, query }: { file: FileResult; searchCt
           <span className="text-[10px] text-red-400">{expandState.error}</span>
         )}
 
+        {/* Loaded but every remaining match sits on the line already shown —
+            without this the click looked like a silent no-op. */}
+        {expandState.loaded && expandState.expanded && expandState.extraHits.length === 0 && extraCount > 0 && (
+          <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
+            {t('agent.toolStatus.searchExpandSameLine')}
+          </span>
+        )}
+
         {/* Expand button: load more lines on demand (only when hits were compacted) */}
         {file.hasMoreHits && extraCount > 0 && !expandState.loaded && !expandState.loading && (
           <button
@@ -372,7 +366,7 @@ function FileResultItem({ file, searchCtx, query }: { file: FileResult; searchCt
           </button>
         )}
         {/* Re-expand button (data already loaded) */}
-        {expandState.loaded && !expandState.expanded && extraCount > 0 && (
+        {expandState.loaded && !expandState.expanded && expandState.extraHits.length > 0 && (
           <button
             type="button"
             className="text-[10px] text-blue-500 dark:text-blue-400 hover:text-blue-600 dark:hover:text-blue-300 cursor-pointer"

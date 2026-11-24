@@ -164,6 +164,8 @@ export const agent = {
     toolStatus: {
         running: "Running...",
         reading: "Reading...",
+        searchExpandSameLine: "No other lines — the remaining matches are on the line above.",
+        searchExpandNoBackend: "Can’t load more matches — no file access for this path.",
         loadingLargeResultSet: "Loading large result set...",
         stateRunning: "running",
         stateStarting: "starting (port not ready yet)",
