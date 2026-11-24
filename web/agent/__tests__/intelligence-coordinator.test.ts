@@ -152,7 +152,7 @@ describe('IntelligenceCoordinator', () => {
     expect(result.systemPrompt).toContain('## Available Agents')
     expect(result.systemPrompt).toContain('`backend-engineer` — Backend Engineer')
     expect(result.systemPrompt).toContain('`frontend-lead` — Frontend Lead')
-    expect(result.systemPrompt).toContain('delegate_to')
+    expect(result.systemPrompt).toContain('spawn_subagent')
   })
 
   it('does not inject agents catalog when only default agent exists', async () => {

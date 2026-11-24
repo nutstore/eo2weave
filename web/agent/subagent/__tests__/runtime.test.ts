@@ -11,9 +11,17 @@ import type {
 import { __resetSubagentRuntimeRegistryForTests, getOrCreateSubagentRuntime, disposeSubagentRuntime } from '@/agent/subagent/runtime'
 
 const hoisted = vi.hoisted(() => {
+  const storedTasks = new Map<string, StoredSubagentTask>()
+  const storedCompletions = new Map<string, import('@/agent/subagent/async-types').SubagentCompletion>()
   const repo = {
     acknowledge: vi.fn(async () => {}),
     findByWorkspaceId: vi.fn(async () => []),
+    findMetadataByWorkspaceId: vi.fn(async () => {
+      const rows = await repo.findByWorkspaceId() as StoredSubagentTask[]
+      for (const task of rows) storedTasks.set(task.agentId, structuredClone(task))
+      return rows.map(task => ({ ...task, messages: [] }))
+    }),
+    findByAgentId: vi.fn(async (_workspaceId: string, id: string) => structuredClone(storedTasks.get(id) ?? null)),
     saveBatch: vi.fn(async (_workspaceId: string, _tasks: StoredSubagentTask[]) => {}),
     commitMessages: vi.fn(async (_input: { workspaceId: string; agentId: string; executionId: string; messages: Message[] }) => ({ applied: true })),
     transitionStatus: vi.fn(async () => ({ applied: true })),
@@ -21,7 +29,11 @@ const hoisted = vi.hoisted(() => {
     finishExecution: vi.fn(async (_input: { task: unknown; completion: import('@/agent/subagent/async-types').SubagentCompletion }) => {}),
     suppressAgent: vi.fn(async () => {}),
     consume: vi.fn(async () => true),
-    find: vi.fn(async () => null),
+    find: vi.fn(async (_id: string): Promise<import('@/agent/subagent/async-types').SubagentCompletion | null> => null),
+    findMetadata: vi.fn(async (id: string) => {
+      const completion = await repo.find(id)
+      return completion ? { ...completion, messages: [] } : null
+    }),
   }
 
   const loopConfigs: any[] = []
@@ -29,6 +41,8 @@ const hoisted = vi.hoisted(() => {
 
   return {
     repo,
+    storedTasks,
+    storedCompletions,
     parentHistory: vi.fn(async () => [createAssistantMessage('parent-only history')]),
     loopConfigs,
     setRunImpl: (impl: (messages: Message[], config: any, callbacks?: any) => Promise<Message[]>) => {
@@ -183,8 +197,19 @@ describe('subagent runtime', () => {
     __resetSubagentRuntimeRegistryForTests()
     useSubagentTaskStore.setState({ tasks: {} })
     hoisted.loopConfigs.length = 0
+    hoisted.storedTasks.clear()
+    hoisted.storedCompletions.clear()
     hoisted.repo.findByWorkspaceId.mockImplementation(async () => [])
-    hoisted.repo.saveBatch.mockReset().mockResolvedValue(undefined)
+    hoisted.repo.saveBatch.mockReset().mockImplementation(async (_workspaceId, tasks) => {
+      for (const task of tasks) hoisted.storedTasks.set(task.agentId, structuredClone(task))
+    })
+    hoisted.repo.finishExecution.mockReset().mockImplementation(async ({ task, completion }) => {
+      const storedTask = task as StoredSubagentTask
+      hoisted.storedTasks.set(storedTask.agentId, structuredClone(storedTask))
+      hoisted.storedCompletions.set(completion.id, structuredClone(completion))
+    })
+    hoisted.repo.find.mockReset().mockImplementation(async (id: string) =>
+      structuredClone(hoisted.storedCompletions.get(id) ?? null))
     hoisted.repo.commitMessages.mockReset().mockResolvedValue({ applied: true })
     hoisted.repo.transitionStatus.mockImplementation(async () => ({ applied: true }))
     hoisted.repo.getStatus.mockImplementation(async () => null)
@@ -250,7 +275,13 @@ describe('subagent runtime', () => {
 
     acknowledge({ applied: true })
     await vi.advanceTimersByTimeAsync(0)
-    expect(useSubagentTaskStore.getState().tasks[receipt.agentId].messages).toContainEqual(checkpoint)
+    // The canonical trace reaches the child and is committed, but a finished member
+    // no longer keeps a second copy in the store — the panel reads it back from
+    // SQLite. Durability is what this test is about, so assert it on the write.
+    expect(hoisted.repo.commitMessages).toHaveBeenCalledWith(expect.objectContaining({
+      messages: expect.arrayContaining([checkpoint]),
+    }))
+    expect(useSubagentTaskStore.getState().tasks[receipt.agentId].messages).toEqual([])
     expect(dispatch).toHaveBeenCalledOnce()
   })
 
@@ -442,6 +473,30 @@ describe('subagent runtime', () => {
     expect(hoisted.loopConfigs).toHaveLength(0)
   })
 
+  it('runs children under the inherited iteration limit instead of the loop default', async () => {
+    const runtime = getOrCreateSubagentRuntime({
+      workspaceId: 'inherited-iteration-limit', provider: {} as any, toolRegistry: {} as any,
+      contextManager: { getConfig: () => ({ maxContextTokens: 1000, reserveTokens: 100 }) } as any,
+      baseToolContext: { directoryHandle: null },
+      // 0 = unlimited, matching a parent conversation that runs without a cap.
+      maxIterations: 0,
+    })
+    await runtime.start({ description: 'task', prompt: 'work' })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(hoisted.loopConfigs.at(-1)?.maxIterations).toBe(0)
+  })
+
+  it('leaves the loop default in place when the parent supplies no setting', async () => {
+    const runtime = getOrCreateSubagentRuntime({
+      workspaceId: 'default-iteration-limit', provider: {} as any, toolRegistry: {} as any,
+      contextManager: { getConfig: () => ({ maxContextTokens: 1000, reserveTokens: 100 }) } as any,
+      baseToolContext: { directoryHandle: null },
+    })
+    await runtime.start({ description: 'task', prompt: 'work' })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(hoisted.loopConfigs.at(-1)?.maxIterations).toBeUndefined()
+  })
+
   it('persists an async result and announces completion automatically without a parent wait API', async () => {
     const ready = vi.fn()
     const runtime = getOrCreateSubagentRuntime({
@@ -569,31 +624,11 @@ describe('subagent runtime', () => {
     expect(hoisted.repo.acknowledge).toHaveBeenCalledTimes(1)
   })
 
-  it('batch accepts valid members independently while enforcing the batch limit', async () => {
-    const resolvers: Array<(messages: Message[]) => void> = []
-    hoisted.setRunImpl(() => new Promise((resolve) => { resolvers.push(resolve) }))
-    const runtime = createRuntime('async-batch', [])
-    const result = await runtime.batchStart({ tasks: [
-      { description: 'one', prompt: 'work' },
-      { description: '', prompt: 'invalid' },
-      { description: 'two', prompt: 'work' },
-    ], max_concurrency: 1 })
-    expect(result.accepted.map((r) => r.task_index)).toEqual([0, 2])
-    expect(result.rejected.map((r) => r.task_index)).toEqual([1])
-    await vi.advanceTimersByTimeAsync(1)
-    expect(resolvers).toHaveLength(1)
-    resolvers[0]([createAssistantMessage('one')])
-    await vi.advanceTimersByTimeAsync(1)
-    expect(resolvers).toHaveLength(2)
-    resolvers[1]([createAssistantMessage('two')])
-    await vi.advanceTimersByTimeAsync(1)
-  })
-
   it('keeps the runtime cap of five across background batches and individual starts', async () => {
     const resolvers: Array<(messages: Message[]) => void> = []
     hoisted.setRunImpl(() => new Promise((resolve) => { resolvers.push(resolve) }))
     const runtime = createRuntime('async-global-cap', [])
-    await runtime.batchStart({ tasks: Array.from({ length: 5 }, (_, i) => ({ description: String(i), prompt: 'work' })) })
+    for (const [i] of Array.from({ length: 5 }, (_, i) => [i])) await runtime.start({ description: String(i), prompt: 'work' })
     await runtime.start({ description: 'six', prompt: 'work' })
     await runtime.start({ description: 'seven', prompt: 'work' })
     await vi.advanceTimersByTimeAsync(0)
@@ -612,7 +647,7 @@ describe('subagent runtime', () => {
     const resolvers: Array<(messages: Message[]) => void> = []
     hoisted.setRunImpl(() => new Promise((resolve) => { resolvers.push(resolve) }))
     const runtime = createRuntime('async-queued-freeze', [])
-    await runtime.batchStart({ tasks: Array.from({ length: 6 }, (_, i) => ({ description: String(i), prompt: 'work' })) })
+    for (const [i] of Array.from({ length: 6 }, (_, i) => [i])) await runtime.start({ description: String(i), prompt: 'work' })
     await vi.advanceTimersByTimeAsync(0)
     const originalProvider = hoisted.loopConfigs[0].provider
     createRuntime('async-queued-freeze', [])
@@ -871,7 +906,7 @@ describe('subagent runtime', () => {
     getOrCreateSubagentRuntime({ workspaceId: 'async-callback-slots', provider: {} as any, toolRegistry: {} as any,
       contextManager: { getConfig: () => ({ maxContextTokens: 1000, reserveTokens: 100 }) } as any,
       baseToolContext: { directoryHandle: null }, onCompletionReady: ready })
-    await runtime.batchStart({ tasks: Array.from({ length: 6 }, (_, i) => ({ description: String(i), prompt: 'work' })) })
+    for (const [i] of Array.from({ length: 6 }, (_, i) => [i])) await runtime.start({ description: String(i), prompt: 'work' })
     await vi.advanceTimersByTimeAsync(0)
     expect(ready).toHaveBeenCalledTimes(6)
   })
@@ -1569,6 +1604,36 @@ describe('subagent runtime', () => {
     expect(resumed.transcript_entries_recovered).toBe(2)
   })
 
+  it('recovers the transcript when the stored row carries an empty message array', async () => {
+    const workspaceId = `workspace-hydrate-empty-${Date.now()}`
+    hoisted.repo.findByWorkspaceId.mockResolvedValueOnce([
+      createStoredTask({
+        workspaceId,
+        agentId: 'subagent_persisted_empty',
+        status: 'pending',
+        messages: [],
+      }),
+    ] as any)
+
+    const runtime = createRuntime(workspaceId, [])
+    // createTask persists the row before any message exists, so a task interrupted
+    // right after its spawn reloads with `messages: []` while the transcript on
+    // disk still holds the whole run. An empty array must not shadow it.
+    ;(
+      runtime as unknown as { loadTranscriptMessages: (agentId: string) => Promise<Message[]> }
+    ).loadTranscriptMessages = vi.fn(async () => [
+      { id: 'u1', role: 'user', content: 'first', timestamp: Date.now() - 3000 },
+      { id: 'a1', role: 'assistant', content: 'answer', timestamp: Date.now() - 2000 },
+    ] as Message[])
+
+    const resumed = await runtime.resume({
+      agentId: 'subagent_persisted_empty',
+      prompt: 'continue from checkpoint',
+    })
+    expect(resumed.status).toBe('resumed')
+    expect(resumed.transcript_entries_recovered).toBe(2)
+  })
+
   it('restores the owning tool-call ID for notifications after hydration', async () => {
     const workspaceId = `workspace-hydrate-parent-${Date.now()}`
     hoisted.repo.findByWorkspaceId.mockResolvedValueOnce([
@@ -1762,15 +1827,33 @@ describe('subagent runtime', () => {
     const runtime = createRuntime(workspaceId, [])
     // Any lookup forces the lazy hydration from SQLite.
     await runtime.getStatus({ agentId: 'subagent_restored_deadline' })
-    runtime.shutdown()
+    hoisted.setRunImpl(() => new Promise<Message[]>(() => {}))
+    await runtime.resume({ agentId: 'subagent_restored_deadline', prompt: 'continue' })
+    await waitForStatus(runtime, 'subagent_restored_deadline', 'running')
+    await vi.advanceTimersByTimeAsync(899999)
+    expect((await runtime.getStatus({ agentId: 'subagent_restored_deadline' })).status).toBe('running')
+    await vi.advanceTimersByTimeAsync(1)
+    expect((await runtime.getStatus({ agentId: 'subagent_restored_deadline' })).error?.code).toBe('SUBAGENT_TIMEOUT')
+  })
 
-    for (let i = 0; i < 50 && hoisted.repo.saveBatch.mock.calls.length === 0; i += 1) {
-      await Promise.resolve()
-    }
-    const call = hoisted.repo.saveBatch.mock.calls.at(-1) as unknown as
-      | [string, Array<{ agentId: string; timeout_ms?: number }>]
-      | undefined
-    const saved = call?.[1] ?? []
-    expect(saved.find((task) => task.agentId === 'subagent_restored_deadline')?.timeout_ms).toBe(900000)
+  it('drops the live transcript once a finished task is persisted', async () => {
+    const runtime = createRuntime('terminal-transcript', [])
+    const receipt = await runtime.start({ description: 'task', prompt: 'work' })
+    await vi.advanceTimersByTimeAsync(1)
+
+    const projection = useSubagentTaskStore.getState().tasks[receipt.agentId]
+    expect(projection.status).toBe('completed')
+    // SQLite owns the transcript from here on; the store copy was 48% of a
+    // production heap. The panel reads it back when a row is expanded.
+    expect(projection.messages).toEqual([])
+
+    // ...and it was dropped after the write, not before it.
+    const persisted = [
+      ...hoisted.repo.saveBatch.mock.calls,
+      ...hoisted.repo.transitionStatus.mock.calls,
+      ...hoisted.repo.commitMessages.mock.calls,
+      ...hoisted.repo.finishExecution.mock.calls,
+    ].some((call) => JSON.stringify(call).includes('"content":"ok"'))
+    expect(persisted).toBe(true)
   })
 })

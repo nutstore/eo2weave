@@ -37,6 +37,8 @@ import { createLLMProvider } from '@/agent/llm/provider-factory'
 import { ContextManager } from '@/agent/context-manager'
 import { getToolRegistry } from '@/agent/tool-registry'
 import { getOrCreateSubagentRuntime } from '@/agent/subagent/runtime'
+import { resolveIterationLimit } from '@/agent/loop/iteration-limit'
+import { createTeamRunKey } from '@/agent/team/team-paths'
 import { getApiKeyRepository } from '@/sqlite'
 import { LLM_PROVIDER_CONFIGS, isCustomProviderType, isPotentiallyDynamicProviderType, getProviderConfig } from '@/agent/providers/types'
 import { generateFollowUp } from '@/agent/follow-up-generator'
@@ -535,6 +537,11 @@ async function runAgentBody(
 
         const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
         owningRunId = runId
+        // One orchestration execution = one team board. The key is minted here,
+        // before any tool runs, so the lead and every child it spawns inherit
+        // the same board. If the first writer minted it instead, two members
+        // spawning in parallel would each create their own.
+        const teamRunKey = createTeamRunKey(conversationId, runId)
         let runEpoch = 0
         // The synchronous start claim guaranteed no concurrent dispatch raced
         // us to this point; convert it into the real run lock now.
@@ -988,6 +995,26 @@ async function runAgentBody(
           // Ignore workspace lookup failures; agent prompt injection will be skipped without projectId.
         }
 
+        // Team board retention. Boards live in this conversation's own workspace
+        // (`workspaces/{conversationId}/team/{runKey}/`), so deleting the
+        // conversation already removes them; this only stops a long chat from
+        // keeping one directory per team run. Run keys are minted here and
+        // nowhere else, so this is the only place the sweep can happen. Fire and
+        // forget: a slow cleanup must never delay the answer.
+        if (resolvedProjectId) {
+          const conversationIdForPrune = conversationId
+          void (async () => {
+            const { pruneTeamBoards } = await import('@/agent/team/team-prune')
+            const report = await pruneTeamBoards(conversationIdForPrune, { activeRunKey: teamRunKey })
+            if (report.removed.length || report.failures.length) {
+              console.log(
+                `[TeamBoard] pruned ${report.removed.length}/${report.scanned} board(s)`,
+                report.failures.length ? `with ${report.failures.length} failure(s)` : '',
+              )
+            }
+          })().catch((error) => console.warn('[TeamBoard] prune failed:', error))
+        }
+
         const activeAgentId = await resolveConversationAgentId(
           resolvedProjectId, conversationId, agentOverrideId, lastUserMessage?.content,
           transientAgent ? { transient: true } : undefined,
@@ -1049,13 +1076,9 @@ async function runAgentBody(
           console.warn('[conversation.store] Unable to establish auto-apply run boundary:', error)
         }
 
-        const configuredMaxIterations = useSettingsStore.getState().maxIterations
-        const maxIterations =
-          configuredMaxIterations === 0
-            ? 0
-            : Number.isFinite(configuredMaxIterations)
-              ? Math.max(1, Math.min(100, Math.floor(configuredMaxIterations)))
-              : 20
+        // One shared resolver: the number in Settings must mean the same thing
+        // for this conversation, its subagents and scheduled runs.
+        const maxIterations = resolveIterationLimit(useSettingsStore.getState().maxIterations)
 
         // The mode boundary belongs to the conversation this run works on. The
         // active-workspace lookup made a run inherit whatever conversation the
@@ -1093,6 +1116,8 @@ async function runAgentBody(
           provider,
           toolRegistry,
           contextManager,
+          // Subagents follow this conversation's setting (0 = unlimited).
+          maxIterations,
           baseToolContext: {
             directoryHandle,
             workspaceId: conversationId,
@@ -1100,6 +1125,7 @@ async function runAgentBody(
             directMode,
             currentAgentId: activeAgentId,
             agentMode,
+            teamRunKey,
             onWorkspacePathsChanged: (paths) => {
               for (const path of paths) runChangedPaths.add(path)
             },
@@ -1174,6 +1200,7 @@ async function runAgentBody(
             directMode,
             currentAgentId: activeAgentId,
             agentMode,
+            teamRunKey,
             onWorkspacePathsChanged: (paths) => {
               for (const path of paths) runChangedPaths.add(path)
             },

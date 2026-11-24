@@ -137,8 +137,6 @@ export const settings = {
     // Experimental features
     experimentalWarning: "これらの機能は実験段階です",
     experimentalWarningDesc: "有効にすると安定性の問題が発生する可能性があります。一部の機能はプロバイダーの同時接続能力に依存します。",
-    batchSpawn: "並列サブエージェント (batch_spawn)",
-    batchSpawnDesc: "AIが複数のサブタスクを並列で起動できるようにします。高い同時接続数をサポートするプロバイダーが必要です。そうでない場合、レート制限エラーが発生する可能性があります。",
 
 
     // Sync panel
@@ -557,10 +555,6 @@ export const settings = {
       availableCredit: "利用可能クレジット",
       monthly: "月間パッケージ",
       topup: "クレジットパック {count}",
-      resetUnknown: "リセット時刻不明",
-      resetSoon: "まもなくリセット",
-      resetInHours: "{count}時間後にリセット",
-      resetInDays: "{count}日後にリセット",
       expireUnknown: "有効期限不明",
       expireSoon: "まもなく期限切れ",
       expireInHours: "{count}時間後に期限切れ",

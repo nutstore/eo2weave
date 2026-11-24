@@ -41,7 +41,7 @@ const messageRepoApplyDiffMock = vi.fn(() => Promise.resolve())
 const messageRepoInsertMock = vi.fn(() => Promise.resolve())
 
 vi.mock('@/sqlite/repositories/subagent.repository', () => ({
-  getSubagentRepository: () => ({ findByWorkspaceId: async () => [], deleteTask: async () => {} }),
+  getSubagentRepository: () => ({ findByWorkspaceId: async () => [], findMetadataByWorkspaceId: async () => [], deleteTask: async () => {} }),
 }))
 vi.mock('@/sqlite/repositories/subagent-completion.repository', () => ({
   getSubagentCompletionRepository: () => ({
@@ -672,6 +672,59 @@ describe('conversation message memory eviction', () => {
 
     // After the debounce flush completes, eviction is allowed
     await vi.advanceTimersByTimeAsync(400)
+    expect(evictConversationMessagesIfSafe(old)).toBe(true)
+  })
+
+  it('keeps eviction blocked when a debounced write fails', async () => {
+    const [old] = seedEvictFixture()
+    const messages = getConv(old)!.messages
+    conversationRepoTouchMock.mockRejectedValueOnce(new Error('db down'))
+    const pending = persistMessageReplace(old, messages, false)
+    const rejection = expect(pending).rejects.toThrow('db down')
+    await vi.advanceTimersByTimeAsync(400)
+    await rejection
+    // The write never reached SQLite: unloading now would drop the only copy.
+    expect(persistSchedulers.has(old)).toBe(true)
+    expect(evictConversationMessagesIfSafe(old)).toBe(false)
+  })
+
+  it('keeps eviction blocked when a final save fails', async () => {
+    const [old] = seedEvictFixture()
+    const messages = getConv(old)!.messages
+    conversationRepoTouchMock.mockRejectedValueOnce(new Error('db down'))
+    await expect(persistMessageReplace(old, messages, true)).rejects.toThrow('db down')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(persistSchedulers.has(old)).toBe(true)
+    expect(evictConversationMessagesIfSafe(old)).toBe(false)
+  })
+
+  it('allows eviction after an immediate final save supersedes a debounced save', async () => {
+    const [old] = seedEvictFixture()
+    const messages = getConv(old)!.messages
+    const debounced = persistMessageReplace(old, messages, false)
+    await persistMessageReplace(old, messages, true)
+    await debounced
+    expect(persistSchedulers.has(old)).toBe(false)
+    expect(evictConversationMessagesIfSafe(old)).toBe(true)
+  })
+
+  it('keeps eviction blocked until the last queued final save completes', async () => {
+    const [old] = seedEvictFixture()
+    const messages = getConv(old)!.messages
+    let finishFirst!: () => void
+    let finishSecond!: () => void
+    conversationRepoTouchMock
+      .mockImplementationOnce(() => new Promise<void>(resolve => { finishFirst = resolve }))
+      .mockImplementationOnce(() => new Promise<void>(resolve => { finishSecond = resolve }))
+    const first = persistMessageReplace(old, messages, true)
+    const second = persistMessageReplace(old, messages, true)
+    await vi.advanceTimersByTimeAsync(0)
+    finishFirst()
+    await first
+    await vi.advanceTimersByTimeAsync(0)
+    expect(evictConversationMessagesIfSafe(old)).toBe(false)
+    finishSecond()
+    await second
     expect(evictConversationMessagesIfSafe(old)).toBe(true)
   })
 

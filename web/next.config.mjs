@@ -99,7 +99,27 @@ const nextConfig = {
     NEXT_PUBLIC_JIANGUOYUN_AI_CLIENT_ID:
       process.env.NEXT_PUBLIC_JIANGUOYUN_AI_CLIENT_ID || '',
   },
-  webpack(config, { webpack, isServer }) {
+  webpack(config, { webpack, isServer, dev }) {
+    // Next's eval-source-map keeps module sources and base64 maps in executable
+    // strings (794 MB measured in a dev tab). External maps keep source debugging
+    // available without embedding those copies in every downloaded script.
+    // Next 15 installs its own EvalSourceMapDevToolPlugin and restores devtool
+    // after this callback. Remove that plugin and select the replacement when
+    // webpack creates the compiler, before it installs its devtool plugin.
+    //   CW_WEBPACK_DEVTOOL=false pnpm dev            disables maps entirely
+    //   CW_WEBPACK_DEVTOOL=eval-source-map pnpm dev  restores Next's faster rebuilds
+    if (dev && !isServer) {
+      const requestedDevtool = process.env.CW_WEBPACK_DEVTOOL || 'source-map'
+      const devtool = requestedDevtool === 'false' ? false : requestedDevtool
+      config.plugins = config.plugins.filter(
+        (plugin) => plugin?.constructor?.name !== 'EvalSourceMapDevToolPlugin'
+      )
+      config.plugins.push({
+        apply(compiler) {
+          compiler.options.devtool = devtool
+        },
+      })
+    }
     // This client-heavy application produces a multi-gigabyte persistent
     // webpack cache; disable it so builds remain viable in
     // constrained CI and local disk environments.

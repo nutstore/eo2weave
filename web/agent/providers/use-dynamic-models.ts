@@ -199,9 +199,9 @@ export function useDynamicModels(
     return () => {
       cancelled = true
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- retryTick is a
-    // deliberate dep: the negative-cache expiry timer bumps it to re-trigger
-    // this effect after the retry window elapses.
+
+    // `retryTick` is a deliberate dep: the negative-cache expiry timer bumps it
+    // to re-trigger this effect after the retry window elapses.
   }, [doFetch, providerType, providerKey, retryTick])
 
   return {

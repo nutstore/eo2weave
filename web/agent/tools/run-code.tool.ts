@@ -128,5 +128,7 @@ export const runCodePromptDoc: ToolPromptDoc = {
     '- `run_code(purpose, code, replay?, inputs?)` — Combine tools with async JavaScript. Explicitly emit images using `image(result)` or `image(result.image)`; return JSON and use `text(value)` or `console.log` for text output.',
     '  - `await agent(prompt, options?)` runs one subagent and waits for its answer (`{ content, agentId, cached }`), so the script can branch on results. Use it instead of `tools.spawn_subagent`, which only queues work and returns a receipt.',
     '  - Pass `replay` to make the run replayable: finished `agent()` steps are served from cache on a rerun with the same key, execution resumes from the first changed step, and Date/Math.random/performance.now throw inside the script. Feed such values in through `inputs` instead.',
+    '  - `agent(prompt, { retry: true })` re-executes that one step and keeps the cached steps around it — use it to retry a single member instead of rerunning the whole script.',
+    '  - A team is one script: pass `task_id` (and optionally `handoff: { expects, reads, writes }`) per call — `Promise.all([agent(p1, { task_id: "t1" }), agent(p2, { task_id: "t2" })])` — and the whole team renders as a single card with one row per member. The task board updates itself; never write it by hand.',
   ],
 }

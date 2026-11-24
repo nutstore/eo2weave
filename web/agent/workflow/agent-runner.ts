@@ -14,7 +14,8 @@
  */
 
 import type { JsonValue } from '@creatorweave/quickjs-runtime'
-import type { SubagentRuntime, SubagentType } from '@/agent/tools/tool-types'
+import type { TeamTaskHandoff } from '@/agent/team/team-manifest'
+import type { SubagentCapabilities, SubagentRuntime, SubagentType } from '@/agent/tools/tool-types'
 
 /** Upper bound on agent() calls per script — bounds the cost of a runaway run. */
 export const MAX_SCRIPT_AGENTS = 32
@@ -95,15 +96,60 @@ interface NormalizedOptions {
   subagent_type?: SubagentType
   mode?: 'plan' | 'act'
   timeout_ms?: number
+  /** Actor the child runs as; `null` makes the anonymous intent explicit. */
+  as?: string | null
+  /** Inline role statement for an ephemeral member. */
+  role?: string
+  /** Capability boundary requested for this step (merged with the actor's). */
+  capabilities?: SubagentCapabilities
+  /**
+   * Skip the cache for this step only. Used to retry a member without losing
+   * the steps around it. Deliberately NOT part of `optionsKey`: it changes which
+   * row is served, not what the child is asked or who it runs as.
+   */
+  retry?: true
+  /** Team board task this step fulfils, so a team can run inside one card. */
+  taskId?: string
+  /** What the lead expects back, what to read first, what to produce. */
+  handoff?: TeamTaskHandoff
   /** Exact identity of everything that shapes the child's answer. */
   optionsKey: string
 }
 
+/**
+ * Keep only the shape the runtime understands. A handoff is free text from the
+ * model, so anything malformed is dropped rather than handed to the board.
+ */
+function normalizeHandoff(raw: JsonValue): TeamTaskHandoff | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined
+  const source = raw as Record<string, JsonValue>
+  const text = (value: JsonValue): string | undefined =>
+    typeof value === 'string' && value.trim() ? value.trim().slice(0, 500) : undefined
+  const list = (value: JsonValue): string[] | undefined => {
+    if (!Array.isArray(value)) return undefined
+    const kept = value.filter((item): item is string => typeof item === 'string' && !!item.trim())
+      .map(item => item.trim().slice(0, 200))
+    return kept.length ? kept : undefined
+  }
+  const handoff: TeamTaskHandoff = {}
+  const expects = text(source.expects)
+  if (expects) handoff.expects = expects
+  const reads = list(source.reads)
+  if (reads) handoff.reads = reads
+  const writes = list(source.writes)
+  if (writes) handoff.writes = writes
+  return Object.keys(handoff).length ? handoff : undefined
+}
+
 function normalizeOptions(raw: JsonValue | undefined, agentMode?: 'plan' | 'act'): NormalizedOptions {
-  if (raw === undefined || raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+  // `agent(prompt)` with no options is a valid call — absent means "no
+  // overrides", not a caller mistake. Keeping it strict here would reject the
+  // plainest form of the call while the tool description advertises it.
+  const rawOptions = raw === undefined ? {} : raw
+  if (rawOptions === null || typeof rawOptions !== 'object' || Array.isArray(rawOptions)) {
     throw new Error('agent(prompt, options?) — options must be a plain object')
   }
-  const record = raw as Record<string, JsonValue>
+  const record = rawOptions as Record<string, JsonValue>
   const resolved: Omit<NormalizedOptions, 'optionsKey'> = {}
   if (typeof record.name === 'string' && record.name.trim()) resolved.name = record.name.trim().slice(0, 80)
   if (typeof record.subagent_type === 'string' && SUBAGENT_TYPES.includes(record.subagent_type as SubagentType)) {
@@ -112,6 +158,29 @@ function normalizeOptions(raw: JsonValue | undefined, agentMode?: 'plan' | 'act'
   if (record.mode === 'plan' || record.mode === 'act') resolved.mode = record.mode
   if (typeof record.timeout_ms === 'number' && Number.isFinite(record.timeout_ms) && record.timeout_ms > 0) {
     resolved.timeout_ms = Math.min(record.timeout_ms, 3_600_000)
+  }
+  if (record.as === null) resolved.as = null
+  else if (typeof record.as === 'string' && record.as.trim()) resolved.as = record.as.trim().slice(0, 64)
+  if (typeof record.role === 'string' && record.role.trim()) resolved.role = record.role.trim().slice(0, 500)
+  if (record.retry === true) resolved.retry = true
+  // Team binding. `task_id` also names the step, so a team run reads as one card
+  // with one row per member instead of N indistinguishable "agent step" rows.
+  if (typeof record.task_id === 'string' && record.task_id.trim()) {
+    resolved.taskId = record.task_id.trim().slice(0, 64)
+  }
+  resolved.handoff = normalizeHandoff(record.handoff)
+  // Capability boundary requested by the script. Class names are validated in
+  // the runtime (unknown names throw), so only shape normalization happens here.
+  if (record.capabilities && typeof record.capabilities === 'object' && !Array.isArray(record.capabilities)) {
+    const raw = record.capabilities as { classes?: unknown; readonly?: unknown }
+    const classes = Array.isArray(raw.classes) ? raw.classes.filter((value): value is string => typeof value === 'string') : undefined
+    const readonly = raw.readonly === true
+    if (classes || readonly) {
+      resolved.capabilities = {
+        ...(classes ? { classes: classes as SubagentCapabilities['classes'] } : {}),
+        ...(readonly ? { readonly } : {}),
+      }
+    }
   }
   // The run's own mode wins over the guest's request, so it belongs to identity:
   // a plan-mode rerun must not be served an act-mode result.
@@ -123,6 +192,17 @@ function normalizeOptions(raw: JsonValue | undefined, agentMode?: 'plan' | 'act'
       resolved.subagent_type ?? null,
       effectiveMode ?? null,
       resolved.timeout_ms ?? null,
+      // Identity, not styling: swapping the actor or the role must never be
+      // served a cached answer produced under different instructions.
+      resolved.as ?? null,
+      resolved.role ?? null,
+      // Restricting tools changes what the answer could possibly be; a narrowed
+      // rerun must not be served a cached result from an unrestricted one.
+      resolved.capabilities ? JSON.stringify(resolved.capabilities) : null,
+      // The task section is injected into the child's prompt, so a different
+      // task or handoff is a different question even when the text matches.
+      resolved.taskId ?? null,
+      resolved.handoff ? JSON.stringify(resolved.handoff) : null,
     ]),
   }
 }
@@ -208,6 +288,10 @@ export function createAgentRunner(options: AgentRunnerOptions): AgentRunner {
   /** Prior steps already served in this run, so a step is never reused twice. */
   const consumedPrior = new Set<number>()
 
+  /** Copies of a computation re-executed by `retry` — never served by fallback. */
+  const retiredKeys = new Set<string>()
+  const cacheKeyOf = (prompt: string, optionsKey: string): string => `${prompt}\u0000${optionsKey}`
+
   /**
    * Cache hit = same prompt text plus same options, preferring this step index.
    * Falling back to any unconsumed prior step keeps replay working when a script
@@ -218,13 +302,17 @@ export function createAgentRunner(options: AgentRunnerOptions): AgentRunner {
   const findCachedStep = (
     prior: Map<number, AgentStepRecord>, index: number, prompt: string, optionsKey: string,
   ): AgentStepRecord | undefined => {
-    const usable = (record: AgentStepRecord | undefined): record is AgentStepRecord =>
+    const matches = (record: AgentStepRecord | undefined): record is AgentStepRecord =>
       !!record && record.status === 'completed' && !consumedPrior.has(record.stepIndex) &&
       record.prompt === prompt && record.optionsKey === optionsKey
     const exact = prior.get(index)
-    if (usable(exact)) return exact
+    if (matches(exact)) return exact
+    // A retried computation's older copies are stale. An exact-index row still
+    // belongs to its own step, but the out-of-order fallback must not hand one
+    // to a step that has no row of its own.
+    if (retiredKeys.has(cacheKeyOf(prompt, optionsKey))) return undefined
     for (const record of [...prior.values()].sort((a, b) => a.stepIndex - b.stepIndex)) {
-      if (usable(record)) return record
+      if (matches(record)) return record
     }
     return undefined
   }
@@ -243,24 +331,44 @@ export function createAgentRunner(options: AgentRunnerOptions): AgentRunner {
     const promptHash = hashText(`${prompt}\u0000${normalized.optionsKey}`)
 
     if (store) {
-      const prior = diverged ? undefined : findCachedStep(await loadPrior(), index, prompt, normalized.optionsKey)
+      // A retry re-executes this step and leaves the others alone. It must not
+      // flip `diverged`: the later steps decide for themselves whether their old
+      // rows still apply, because a hit needs an exact prompt match. The skipped
+      // row is consumed so the "any unconsumed prior step" fallback cannot hand
+      // this stale answer to a later step with the same prompt.
+      const forced = normalized.retry === true
+      const prior = forced || diverged ? undefined : findCachedStep(await loadPrior(), index, prompt, normalized.optionsKey)
       if (prior) {
         consumedPrior.add(prior.stepIndex)
         steps.push({ index, status: 'cached', agentId: prior.agentId ?? undefined })
         return { content: prior.result ?? '', agentId: prior.agentId, usage: null, cached: true }
       }
-      diverged = true
+      if (forced) {
+        // A retry re-runs this computation, so every older copy of it is stale.
+        // Retire the (prompt, optionsKey) pair rather than this step index: an
+        // index can hold another step's row (which must stay cached) while the
+        // stale copies of this computation can sit at other indices (where the
+        // fallback would otherwise serve one to a later step).
+        retiredKeys.add(cacheKeyOf(prompt, normalized.optionsKey))
+      } else {
+        diverged = true
+      }
     }
 
     const startedAt = now()
     try {
       const spawned = await spawnWithUniqueName(options.runtime, {
-        description: normalized.name || `agent step ${index + 1}`,
+        description: normalized.name || normalized.taskId || `agent step ${index + 1}`,
         prompt,
-        name: normalized.name,
+        name: normalized.name ?? normalized.taskId,
         mode: options.agentMode === 'plan' ? 'plan' : normalized.mode,
         subagent_type: normalized.subagent_type,
         timeout_ms: normalized.timeout_ms,
+        as: normalized.as,
+        role: normalized.role,
+        capabilities: normalized.capabilities,
+        task_id: normalized.taskId,
+        handoff: normalized.handoff,
         parentToolCallId: options.parentToolCallId,
       }, signal)
       const usage = spawned.usage as unknown as JsonValue | undefined

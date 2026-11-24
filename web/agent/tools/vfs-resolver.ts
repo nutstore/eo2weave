@@ -1,4 +1,4 @@
-import { ProjectManager, type AgentManager } from '@/opfs'
+import { ProjectManager, getWorkspaceManager, type AgentManager } from '@/opfs'
 import { useAgentsStore } from '@/store/agents.store'
 import type { ToolContext } from './tool-types'
 import type { VfsBackend } from './vfs-backend'
@@ -8,6 +8,8 @@ import { AssetsBackend } from './backends/assets-backend'
 import { SkillsBackend } from './backends/skills-backend'
 import { ProviderBackend, ProvidersRootBackend } from './backends/provider-backend'
 import { isProtectedAgentCoreFile } from './agent-file-protection'
+import { authorizeTeamAccess } from '@/agent/team/team-paths'
+import { TeamBackend } from '@/agent/team/team-backend'
 
 export { isProtectedAgentCoreFile } from './agent-file-protection'
 
@@ -47,12 +49,22 @@ export interface ExternalTarget {
   backend: VfsBackend
 }
 
-export type ResolvedVfsTarget = WorkspaceTarget | AgentTarget | AssetsTarget | SkillsTarget | ExternalTarget
+export interface TeamTarget {
+  kind: 'team'
+  runKey: string
+  path: string
+  projectId: string
+  backend: VfsBackend
+}
+
+export type ResolvedVfsTarget = WorkspaceTarget | AgentTarget | AssetsTarget | SkillsTarget | ExternalTarget | TeamTarget
 
 interface ParsedPath {
-  namespace: 'workspace' | 'agents' | 'assets' | 'skills' | 'external'
+  namespace: 'workspace' | 'agents' | 'assets' | 'skills' | 'external' | 'team'
   path: string
   agentId?: string
+  /** Only for the team namespace: which run's board. */
+  runKey?: string
 }
 
 let projectManagerPromise: Promise<ProjectManager> | null = null
@@ -121,6 +133,19 @@ function parseVfsPath(
     }
   }
 
+  if (namespace === 'team') {
+    // `vfs://team/{runKey}/{relative}` — the run key is part of the namespace
+    // contract, not a workspace name: it is validated here so an invalid key
+    // never reaches the ACL layer as "a run that simply does not exist".
+    const runKey = parts[1] || ''
+    if (!runKey) throw new Error('Team path requires a run key: vfs://team/{runKey}/...')
+    return {
+      namespace: 'team',
+      runKey,
+      path: normalizeRelativePath(parts.slice(2).join('/'), { allowEmpty: allowEmptyPath }),
+    }
+  }
+
   if (namespace === 'agents' || namespace === 'agent') {
     const agentId = parts[1] || ''
     if (!agentId) {
@@ -176,6 +201,11 @@ function resolveActorAgentId(context: ToolContext): string | null {
   if (context.currentAgentId && context.currentAgentId.trim()) {
     return context.currentAgentId
   }
+  // A delegated member's identity comes from its own execution, never from the
+  // UI. `activeAgentId` is whatever the user happens to have open, and letting
+  // it name a member's write area is the same scope bug as reading agent mode
+  // from the active tab: the child would silently write into the lead's slot.
+  if (context.isSubagent) return null
   const fromStore = useAgentsStore.getState().activeAgentId
   if (fromStore && fromStore.trim()) return fromStore
   return 'default'
@@ -229,6 +259,55 @@ export async function resolveVfsTarget(
     }
     if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(mountName)) throw new Error('Invalid external mount name')
     return { kind: 'external', mountName, path: parts.join('/'), backend: new ProviderBackend(mountName) }
+  }
+
+  if (parsed.namespace === 'team') {
+    const teamProjectId = resolveProjectId(context)
+    if (!teamProjectId) throw new Error('No active project for team namespace path')
+    const runKey = parsed.runKey!
+    const op = action === 'read' || action === 'list' ? 'read' : action === 'delete' ? 'delete' : 'write'
+    const access = authorizeTeamAccess({
+      op,
+      runKey,
+      relativePath: parsed.path,
+      actorId: resolveActorAgentId(context),
+      taskId: context.teamTaskId ?? null,
+      currentRunKey: context.teamRunKey ?? '',
+      // Anything that is not itself a delegated member is the run's lead.
+      isLead: !context.isSubagent,
+    })
+    if (!access.allowed) {
+      throw new Error(`PERMISSION_DENIED: ${access.reason}`)
+    }
+
+    // A board belongs to the conversation that minted the run key, not to the
+    // project: one conversation = one workspace, so `workspaces/{id}/team/{runKey}`
+    // is the board, and deleting the conversation takes the boards with it. The
+    // path stays outside `files/` (the user's folder, with pending/sync tracking)
+    // and outside `assets/` (user uploads, mounted at /mnt_assets).
+    const conversationId = context.workspaceId
+    const isRead = op === 'read'
+    let runDir: FileSystemDirectoryHandle
+    try {
+      const workspace = conversationId
+        ? await (await getWorkspaceManager()).getWorkspace(conversationId)
+        : null
+      if (!workspace) throw new Error('no workspace for this run')
+      // Reading never creates a board: a run that has not written must look
+      // missing, otherwise the set of existing runs becomes unknowable.
+      const teamDir = await workspace.getTeamDir({ create: !isRead })
+      runDir = await teamDir.getDirectoryHandle(runKey, { create: !isRead })
+    } catch {
+      throw new Error(`Team board not found for run "${runKey}"`)
+    }
+
+    return {
+      kind: 'team',
+      runKey,
+      path: parsed.path,
+      projectId: teamProjectId,
+      backend: TeamBackend.fromDirectory(runDir),
+    }
   }
 
   if (parsed.namespace === 'workspace') {

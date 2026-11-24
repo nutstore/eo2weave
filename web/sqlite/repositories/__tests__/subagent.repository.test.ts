@@ -167,5 +167,84 @@ describe('SubagentRepository', () => {
 
     expect(task.subagent_type).toBe('worker')
     expect(task.parentToolCallId).toBe('tool-call-2')
+})
+
+  it('persists and restores the execution identity and board binding', async () => {
+    const repo = new SubagentRepository()
+    await repo.saveBatch('w1', [
+      {
+        agentId: 'a1',
+        workspaceId: 'w1',
+        description: 'member',
+        status: 'running',
+        mode: 'act',
+        subagent_type: 'worker',
+        actorId: 'reviewer',
+        role: 'Review the diff.',
+        teamTaskId: 't1',
+        teamRunKey: 'run-1',
+        messages: [],
+        queue: [],
+        stopped: false,
+        created_at: 1,
+        updated_at: 2,
+        last_activity_at: 2,
+      },
+    ])
+
+    const [sql, params] = hoisted.db.execute.mock.calls[0] as [string, unknown[]]
+    expect(sql).toContain('actor_id')
+    expect(sql).toContain('team_run_key = excluded.team_run_key')
+    // agent_id … team_run_key are bound in insert order.
+    expect(params.slice(9, 13)).toEqual(['reviewer', 'Review the diff.', 't1', 'run-1'])
+
+    hoisted.db.queryAll.mockResolvedValueOnce([
+      {
+        execution_json: null, agent_id: 'a1', workspace_id: 'w1', name: null, description: 'member',
+        status: 'failed', mode: 'act', subagent_type: 'worker', parent_tool_call_id: null,
+        timeout_ms: null, actor_id: 'reviewer', role: 'Review the diff.', team_task_id: 't1',
+        team_run_key: 'run-1', messages_json: '[]', queue_json: '[]', usage_json: null,
+        error_json: null, stopped: 0, created_at: 1, updated_at: 2, last_activity_at: 2,
+      },
+    ])
+    const [task] = await repo.findMetadataByWorkspaceId('w1')
+    expect(task).toMatchObject({
+      actorId: 'reviewer',
+      role: 'Review the diff.',
+      teamTaskId: 't1',
+      teamRunKey: 'run-1',
+    })
+  })
+
+  describe('findMetadataByWorkspaceId', () => {
+    it('never selects the transcripts', async () => {
+      // Hydration only needs labels and status. Selecting `*` pulled 130 MB of
+      // messages_json across an install (one row at 17 MB) and parsed all of it
+      // into strings the tab never read.
+      hoisted.db.queryAll.mockResolvedValueOnce([])
+
+      await new SubagentRepository().findMetadataByWorkspaceId('conv-1')
+
+      const [sql, params] = hoisted.db.queryAll.mock.calls[0] as [string, unknown[]]
+      expect(sql).not.toContain('*')
+      expect(sql).toContain("'[]' AS messages_json")
+      expect(sql).not.toMatch(/,\s*messages_json/)
+      expect(params).toEqual(['conv-1'])
+    })
+
+    it('still maps a row back with an empty transcript', async () => {
+      hoisted.db.queryAll.mockResolvedValueOnce([{
+        execution_json: null, agent_id: 'a1', workspace_id: 'conv-1', name: 'n', description: 'd',
+        status: 'completed', mode: 'act', subagent_type: 'explorer', parent_tool_call_id: null,
+        timeout_ms: null, messages_json: '[]', queue_json: '[]', usage_json: null, error_json: null,
+        stopped: 0, created_at: 1, updated_at: 2, last_activity_at: 2,
+      }])
+
+      const [task] = await new SubagentRepository().findMetadataByWorkspaceId('conv-1')
+
+      expect(task.agentId).toBe('a1')
+      expect(task.description).toBe('d')
+      expect(task.messages).toEqual([])
+    })
   })
 })

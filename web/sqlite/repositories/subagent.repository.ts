@@ -16,6 +16,10 @@ interface SubagentTaskRow {
   subagent_type: string
   parent_tool_call_id: string | null
   timeout_ms: number | null
+  actor_id: string | null
+  role: string | null
+  team_task_id: string | null
+  team_run_key: string | null
   messages_json: string
   queue_json: string
   usage_json: string | null
@@ -37,6 +41,14 @@ export interface StoredSubagentTask {
   subagent_type: SubagentType
   parentToolCallId?: string
   timeout_ms?: number
+  /** Actor persona this execution ran as; null/undefined = anonymous. */
+  actorId?: string | null
+  /** Inline role statement, restored so a resumed member keeps its prompt. */
+  role?: string
+  /** Team board task this execution fulfils. */
+  teamTaskId?: string
+  /** Board run this task belongs to, pinned at spawn. */
+  teamRunKey?: string
   messages: Message[]
   queue: Array<{ message: string; enqueued_at: number }>
   usage?: SubagentTaskUsage
@@ -78,6 +90,49 @@ export class SubagentRepository {
       [workspaceId]
     )
     return rows.map((row) => this.rowToTask(row))
+  }
+
+  /**
+   * Every task of a conversation, WITHOUT the transcripts.
+   *
+   * `findByWorkspaceId` selects `*`, which pulls `messages_json` for every task —
+   * 130 MB across this install, with one row at 17 MB. Hydration at startup only
+   * needs the labels and the status badge, so reading the transcripts there parsed
+   * the whole history into strings the tab never used.
+   */
+  async findMetadataByWorkspaceId(workspaceId: string): Promise<StoredSubagentTask[]> {
+    const db = getSQLiteDB()
+    const rows = await db.queryAll<SubagentTaskRow>(
+      `SELECT execution_json, agent_id, workspace_id, name, description, status, mode,
+              subagent_type, parent_tool_call_id, timeout_ms,
+              actor_id, role, team_task_id, team_run_key,
+              '[]' AS messages_json,
+              queue_json, usage_json, error_json, stopped, created_at, updated_at, last_activity_at
+         FROM subagent_tasks
+        WHERE workspace_id = ?
+        ORDER BY updated_at DESC`,
+      [workspaceId]
+    )
+    return rows.map((row) => this.rowToTask(row))
+  }
+
+  /**
+   * One task, for opening a single transcript.
+   *
+   * Exists so a panel does not have to parse every transcript of the conversation
+   * to show one: `findByWorkspaceId` JSON-parses all of them, which on a long
+   * conversation is the largest single allocation the UI makes.
+   */
+  async findByAgentId(workspaceId: string, agentId: string): Promise<StoredSubagentTask | null> {
+    const db = getSQLiteDB()
+    const row = await db.queryFirst<SubagentTaskRow>(
+      `SELECT *
+         FROM subagent_tasks
+        WHERE workspace_id = ?
+          AND agent_id = ?`,
+      [workspaceId, agentId]
+    )
+    return row ? this.rowToTask(row) : null
   }
 
   /** Acknowledge a single attempt without changing execution or result delivery. */
@@ -217,6 +272,10 @@ export class SubagentRepository {
       subagent_type: row.subagent_type as SubagentType,
       parentToolCallId: row.parent_tool_call_id || undefined,
       timeout_ms: row.timeout_ms ?? undefined,
+      actorId: row.actor_id || undefined,
+      role: row.role || undefined,
+      teamTaskId: row.team_task_id || undefined,
+      teamRunKey: row.team_run_key || undefined,
       messages: parseJSON<Message[]>(row.messages_json, []),
       queue: parseJSON<Array<{ message: string; enqueued_at: number }>>(row.queue_json, []),
       usage: parseJSON<SubagentTaskUsage | null>(row.usage_json || '', null) || undefined,
@@ -234,9 +293,10 @@ export async function saveSubagentTask(tx: SQLiteTransaction, workspaceId: strin
   await tx.execute(
     `INSERT INTO subagent_tasks (
         agent_id, workspace_id, name, description, status, mode, subagent_type, parent_tool_call_id, timeout_ms,
+        actor_id, role, team_task_id, team_run_key,
         messages_json, queue_json, usage_json, error_json, stopped,
         created_at, updated_at, last_activity_at, execution_json
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(agent_id) DO UPDATE SET
        workspace_id = excluded.workspace_id,
        name = excluded.name,
@@ -246,6 +306,10 @@ export async function saveSubagentTask(tx: SQLiteTransaction, workspaceId: strin
        subagent_type = excluded.subagent_type,
        parent_tool_call_id = excluded.parent_tool_call_id,
        timeout_ms = excluded.timeout_ms,
+       actor_id = excluded.actor_id,
+       role = excluded.role,
+       team_task_id = excluded.team_task_id,
+       team_run_key = excluded.team_run_key,
        messages_json = excluded.messages_json,
        queue_json = excluded.queue_json,
        usage_json = excluded.usage_json,
@@ -270,6 +334,10 @@ export async function saveSubagentTask(tx: SQLiteTransaction, workspaceId: strin
       task.subagent_type,
       task.parentToolCallId || null,
       task.timeout_ms ?? null,
+      task.actorId ?? null,
+      task.role ?? null,
+      task.teamTaskId ?? null,
+      task.teamRunKey ?? null,
       toJSON(task.messages),
       toJSON(task.queue),
       toJSON(task.usage || null),

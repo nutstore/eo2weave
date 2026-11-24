@@ -1,7 +1,7 @@
 import { SubagentStreamTrace } from './stream-trace'
 import type { DraftAssistantEvent } from '@/store/draft-assistant'
 import type {
-  SubagentAcceptedReceipt, SubagentBatchAcceptance, SubagentCompletion,
+  SubagentAcceptedReceipt, SubagentCompletion,
   SubagentContinuation, SubagentExecutionMetadata,
 } from './async-types'
 import { useSubagentTaskStore } from '@/store/subagent-task.store'
@@ -12,7 +12,6 @@ import { createUserMessage, generateId, type Message } from '@/agent/message-typ
 import type { PiAIProvider } from '@/agent/llm/pi-ai-provider'
 import type { ToolRegistry } from '@/agent/tool-registry'
 import type {
-  BatchSpawnSubagentInput,
   SpawnSubagentInput,
   SpawnSubagentResult,
   SubagentRuntime,
@@ -28,11 +27,47 @@ import { SubagentError, SubagentErrorCode } from '@/agent/tools/tool-types'
 import type { SubagentTraceMessage } from '@/agent/tools/tool-types'
 import { TranscriptWriter, getTranscriptDir, getTranscriptFile } from './transcript'
 import { buildSubagentSystemPrompt } from './role-prompts'
+import { assignTeamTask, appendTeamLedger, buildTeamTaskSection, listTeamSlotFiles, readTeamTaskView, recordTeamTaskOutcome } from '@/agent/team/team-board'
+import { teamMemberSlot } from '@/agent/team/team-paths'
+import {
+  intersectCapabilityClasses,
+  isToolAllowedByClasses,
+  parseCapabilityClasses,
+  type ToolCapabilityClass,
+} from '@/agent/tools/tool-capabilities'
+import type { ToolDefinition } from '@/agent/tools/tool-types'
+
+/**
+ * Narrow a tool registry to the given capability classes.
+ *
+ * Only the definition list is filtered; execution semantics are untouched, so a
+ * hallucinated tool name still reaches `beforeToolCall`, which rejects it too.
+ * Both layers exist on purpose: hiding the schema is how the model stays honest,
+ * refusing the call is what protects the workspace.
+ */
+function withCapabilityClasses(registry: ToolRegistry, classes: readonly ToolCapabilityClass[]): ToolRegistry {
+  return new Proxy(registry, {
+    get(target, property, receiver) {
+      if (property === 'getToolDefinitionsForMode') {
+        return (
+          mode: AgentMode,
+          options?: { includeDynamicDescriptions?: boolean; directMode?: boolean },
+        ): ToolDefinition[] =>
+          target
+            .getToolDefinitionsForMode(mode, options)
+            .filter((definition) => isToolAllowedByClasses(definition.function.name, classes))
+      }
+      const value = Reflect.get(target, property, receiver)
+      return typeof value === 'function' ? value.bind(target) : value
+    },
+  })
+}
 
 type SubagentExecution = SubagentExecutionMetadata & {
-  deps: SubagentRuntimeDeps
-  contextConfig: ReturnType<ContextManager['getConfig']>
+  deps?: SubagentRuntimeDeps
+  contextConfig?: ReturnType<ContextManager['getConfig']>
   completion?: SubagentCompletion
+  completionPersisted?: boolean
   terminalPromise?: Promise<void>
   startedAt?: number
   priorMessageIds?: Set<string>
@@ -89,6 +124,8 @@ type SubagentTaskInternal = {
   accepted: boolean
   persistence?: Promise<void>
   terminalPersisting?: boolean
+  /** True once this task's transcript is in SQLite, so the live copy can be dropped. */
+  transcriptPersisted?: boolean
   name?: string
   description: string
   status: SubagentTaskStatus
@@ -97,6 +134,7 @@ type SubagentTaskInternal = {
   last_activity_at: number
   mode: AgentMode
   messages: Message[]
+  messagesLoaded: boolean
   queue: QueuedSubagentMessage[]
   max_queue_size: number
   overflow_action: 'reject' | 'drop_oldest'
@@ -116,8 +154,30 @@ type SubagentTaskInternal = {
   transcriptWriter?: TranscriptWriter
   /** Subagent role — controls behavior suffix appended to system prompt. */
   subagent_type: SubagentType
+  /** Actor persona this execution runs as; null = anonymous (no persona at all). */
+  actorId?: string | null
+  /** Inline role statement used when no persona files apply. */
+  role?: string
+  /** Tool classes this execution may use; undefined = unrestricted by class. */
+  capabilityClasses?: ToolCapabilityClass[]
   /** Parent spawn_subagent / batch_spawn call that owns this task's UI. */
   parentToolCallId?: string
+  /** Team board task this execution fulfils (see team-board.ts). */
+  teamTaskId?: string
+  /**
+   * Board run this task belongs to, pinned when the spawn is accepted.
+   *
+   * Deliberately not read from `deps.baseToolContext` later: the live context
+   * follows whatever run is current, and a member that outlives its turn would
+   * then write its outcome to the next turn's board — or silently nowhere.
+   */
+  teamRunKey?: string
+  /** Prompt-ready view of that task; undefined = no board task recorded. */
+  teamBrief?: string | null
+  /** The run's shared goal from 00-brief.md, so a member knows why it is here. */
+  teamGoal?: string | null
+  /** Why the board could not be updated, surfaced to the member prompt. */
+  teamBoardError?: string
 }
 
 export type SubagentRuntimeDeps = {
@@ -129,6 +189,14 @@ export type SubagentRuntimeDeps = {
   toolRegistry: ToolRegistry
   contextManager: ContextManager
   baseToolContext: ToolContext
+  /**
+   * Iteration limit for child loops, inherited from the conversation setting
+   * through `resolveIterationLimit`. `0` means unlimited here exactly as it
+   * does for the main conversation — a subagent must not be pinned to the
+   * loop's built-in default while its parent runs past it. Omitted → the
+   * loop's own default applies.
+   */
+  maxIterations?: number
   onNotification?: (event: SubagentTaskNotification | SubagentStepNotification) => void
   /** Returns the OPFS workspace directory for transcript storage. Optional — transcript disabled if not provided. */
   getWorkspaceDir?: () => Promise<FileSystemDirectoryHandle>
@@ -237,8 +305,8 @@ class SubagentRuntimeImpl implements SubagentRuntime {
    * subagent; without this, a workspace that spawns many subagents keeps one
    * loop per task alive for the lifetime of the runtime — a monotonic memory
    * leak. Dropping them is safe: `ensureLoop` recreates both on a later
-   * resume, and the task's `messages` (needed for persistence and the detail
-   * panel's DB fallback) are untouched.
+   * resume. Durable transcripts are released too and loaded individually when
+   * the parent reads a trace or resumes the task.
    */
   private releaseTaskRuntime(task: SubagentTaskInternal): void {
     if (task.status !== 'completed' && task.status !== 'failed' && task.status !== 'killed') return
@@ -247,7 +315,16 @@ class SubagentRuntimeImpl implements SubagentRuntime {
     if (task.processing) return
     task.loop = undefined
     task.toolContext = undefined
-    if (task.execution) task.execution.trace = undefined
+    if (task.execution) {
+      task.execution.trace = undefined
+      task.execution.deps = undefined
+      task.execution.contextConfig = undefined
+      task.execution.priorMessageIds = undefined
+    }
+    if (task.transcriptPersisted && task.queue.length === 0) {
+      task.messages = []
+      task.messagesLoaded = false
+    }
   }
 
   private createExecution(isAsync: boolean): SubagentExecution {
@@ -264,16 +341,85 @@ class SubagentRuntimeImpl implements SubagentRuntime {
     }
   }
 
+  /**
+   * Read the actor's declared capability boundary from meta.json.
+   *
+   * An explicit `as` that cannot be resolved is a caller bug, not a fallback
+   * case: fail closed with a readable error instead of granting an unrestricted
+   * surface to an agent that might not be the one the caller meant.
+   */
+  private async loadActorClasses(actorId: string): Promise<ToolCapabilityClass[] | undefined> {
+    if (!actorId) return undefined
+    const projectId = this.deps.baseToolContext.projectId
+    if (!projectId) {
+      throw new SubagentError(
+        SubagentErrorCode.INVALID_INPUT,
+        'Cannot resolve actor capabilities without a project context.',
+        { field: 'as' },
+      )
+    }
+    const project = await (await (await import('@/opfs')).ProjectManager.create()).getProject(projectId)
+    const agent = await project?.agentManager.getAgent(actorId)
+    if (!agent) {
+      throw new SubagentError(
+        SubagentErrorCode.INVALID_INPUT,
+        `Agent "${actorId}" does not exist in this project.`,
+        { field: 'as' },
+      )
+    }
+    const declared = agent.meta.capabilities
+    try {
+      const declaredClasses = parseCapabilityClasses(declared?.classes)
+      return intersectCapabilityClasses(
+        declared?.readonly === true ? ['read'] : undefined,
+        // An empty array in meta.json declares nothing, so it must not turn the
+        // actor into a zero-tool member: keep the readonly default. Only a
+        // caller-supplied boundary may mean "no tools at all".
+        declaredClasses?.length ? declaredClasses : undefined,
+      )
+    } catch (error) {
+      // A malformed declaration must not silently widen the surface.
+      console.warn('[subagent] invalid capability classes in meta.json, falling back to read-only', actorId, error)
+      return ['read']
+    }
+  }
+
   private async createTask(input: SpawnSubagentInput, isAsync: boolean): Promise<SubagentTaskInternal> {
     await this.ensureHydrated()
     const description = (input.description || '').trim()
     const prompt = (input.prompt || '').trim()
     const name = typeof input.name === 'string' ? input.name.trim() : undefined
     const subagentType: SubagentType = input.subagent_type ?? 'general-purpose'
+    const capabilityRequest = input.capabilities
+    const requestedReadonly = capabilityRequest?.readonly === true
+    let requestedClasses: ToolCapabilityClass[] | undefined
+    try {
+      requestedClasses = parseCapabilityClasses(capabilityRequest?.classes)
+    } catch (error) {
+      throw new SubagentError(SubagentErrorCode.INVALID_INPUT, (error as Error).message, { field: 'capabilities' })
+    }
+    if (requestedReadonly && requestedClasses?.some(name => name !== 'read')) {
+      throw new SubagentError(
+        SubagentErrorCode.INVALID_INPUT,
+        'capabilities.readonly cannot be combined with non-read classes',
+        { field: 'capabilities' },
+      )
+    }
+    // Only an explicit `as` needs an async capability lookup. Keeping the
+    // no-actor path synchronous preserves the timing callers already rely on
+    // (a spawn becomes visible on the next tick, before any I/O).
+    const actorClasses = input.as ? await this.loadActorClasses(input.as) : undefined
+    const requestedBoundary = intersectCapabilityClasses(
+      requestedReadonly ? ['read'] : undefined,
+      requestedClasses,
+    )
+    const capabilityClasses = intersectCapabilityClasses(requestedBoundary, actorClasses)
     // Explorer is a capability boundary, not just a prompt convention. Force
     // Plan mode so write tools are never exposed, even if a caller supplies
-    // mode: 'act'.
-    const mode = subagentType === 'explorer' ? 'plan' : input.mode || this.deps.baseToolContext.agentMode || 'act'
+    // mode: 'act'. The same applies to an explicit readonly request.
+    const mode = subagentType === 'explorer' || requestedReadonly
+      ? 'plan'
+      : input.mode || this.deps.baseToolContext.agentMode || 'act'
     const timeoutMs = this.parseExecutionTimeout(input.timeout_ms)
 
     if (!description) {
@@ -302,6 +448,7 @@ class SubagentRuntimeImpl implements SubagentRuntime {
       last_activity_at: now,
       mode,
       messages: [],
+      messagesLoaded: true,
       queue: [],
       max_queue_size: DEFAULT_QUEUE_SIZE,
       overflow_action: DEFAULT_OVERFLOW_ACTION,
@@ -312,6 +459,9 @@ class SubagentRuntimeImpl implements SubagentRuntime {
       lifecycle_version: 0,
       running_notification_armed: false,
       subagent_type: subagentType,
+      actorId: input.as ?? null,
+      capabilityClasses,
+      role: typeof input.role === 'string' && input.role.trim() ? input.role.trim() : undefined,
       parentToolCallId: input.parentToolCallId,
     }
 
@@ -331,8 +481,71 @@ class SubagentRuntimeImpl implements SubagentRuntime {
       if (name) this.nameToId.delete(name)
       throw error
     }
+    // Team board: the lead records the task (single writer) and the member gets
+    // its own task in the prompt. A board failure degrades the prompt, never the
+    // spawn — but it travels into the prompt instead of being swallowed.
+    if (input.task_id && this.deps.baseToolContext.teamRunKey) {
+      task.teamTaskId = input.task_id.trim()
+      task.teamRunKey = this.deps.baseToolContext.teamRunKey
+      const assigned = await assignTeamTask(this.deps.baseToolContext, {
+        taskId: task.teamTaskId,
+        goal: description,
+        assignee: task.actorId ?? null,
+        handoff: input.handoff,
+      })
+      // A contract that cannot be executed is the caller's mistake: fail the
+      // spawn now instead of letting the member hit the wall mid-task.
+      if (assigned.fatal) {
+        this.tasks.delete(agentId)
+        if (name) this.nameToId.delete(name)
+        throw new SubagentError(SubagentErrorCode.INVALID_INPUT, assigned.error ?? 'invalid team task', {
+          field: 'handoff',
+        })
+      }
+      task.teamBrief = assigned.result?.brief ?? null
+      task.teamGoal = assigned.result?.runGoal ?? null
+      task.teamBoardError = assigned.error
+    }
     this.publishTask(task)
     return task
+  }
+
+  /**
+   * Mirror a member's terminal state onto the team board.
+   *
+   * Never throws: a board that cannot be written degrades the report, and the
+   * child's own completion is more important than its bookkeeping. The reason is
+   * kept on the task so it can surface in the parent's next prompt.
+   */
+  private async syncTeamTaskOutcome(
+    task: SubagentTaskInternal,
+    status: 'done' | 'blocked',
+    error?: string,
+  ): Promise<void> {
+    if (!task.teamTaskId) return
+    if (!task.teamRunKey) {
+      task.teamBoardError = 'the board run was not captured at spawn, so this outcome was not recorded'
+      return
+    }
+    // The board this task was created on, not whatever run happens to be current
+    // now: a member can finish after its turn has ended.
+    const context = { ...this.deps.baseToolContext, teamRunKey: task.teamRunKey }
+    const slot = teamMemberSlot({ actorId: task.actorId ?? null, taskId: task.teamTaskId })
+    try {
+      const artifacts = status === 'done' && slot ? await listTeamSlotFiles(context, slot) : undefined
+      await recordTeamTaskOutcome(context, { taskId: task.teamTaskId, status, artifacts, error })
+      await appendTeamLedger(context, {
+        at: Date.now(),
+        taskId: task.teamTaskId,
+        event: status === 'done' ? 'done' : 'blocked',
+        status,
+        actorId: task.actorId ?? null,
+        artifacts,
+        error,
+      })
+    } catch (boardFailure) {
+      task.teamBoardError = boardFailure instanceof Error ? boardFailure.message : String(boardFailure)
+    }
   }
 
   async start(input: SpawnSubagentInput): Promise<SubagentAcceptedReceipt> {
@@ -377,8 +590,10 @@ class SubagentRuntimeImpl implements SubagentRuntime {
       throw new SubagentError((task.error?.code || SubagentErrorCode.RESOURCE_EXHAUSTED) as keyof typeof SubagentErrorCode,
         `subagent finished with status ${task.status}`)
     }
+    // `||`, not `??`: an empty recorded result must not shadow a transcript that
+    // is still in memory (a released task has neither, so this stays empty).
     return { status: 'completed', agentId: task.agentId,
-      content: this.extractLatestAssistantContent(task.messages), usage: task.usage }
+      content: task.execution?.completion?.result || this.extractLatestAssistantContent(task.messages), usage: task.usage }
   }
 
   async sendMessage(input: {
@@ -592,16 +807,23 @@ class SubagentRuntimeImpl implements SubagentRuntime {
     if (!prompt) {
       throw new SubagentError(SubagentErrorCode.INVALID_INPUT, 'prompt is required', { field: 'prompt' })
     }
-    const recovered = task.messages.length
-    // If no in-memory messages, try loading from transcript
-    if (recovered === 0) {
-      const transcriptMessages = await this.loadTranscriptMessages(task.agentId)
-      if (transcriptMessages.length > 0) {
-        task.messages = transcriptMessages
-      }
+    // A member revived from metadata has identity but no board text: the brief
+    // and run goal are prompt material and are never stored. Re-read its own
+    // task once here, so a resumed member sees the task that is on the board
+    // instead of "the lead did not record a task for this spawn".
+    if (task.teamTaskId && task.teamRunKey && !task.teamBrief) {
+      const view = await readTeamTaskView(
+        { ...this.deps.baseToolContext, teamRunKey: task.teamRunKey },
+        task.teamTaskId,
+      )
+      task.teamBrief = view.brief
+      task.teamGoal = view.runGoal
+      if (view.error) task.teamBoardError = view.error
     }
-    const transcriptRecovered = task.messages.length
+    let transcriptRecovered = 0
     await this.withTaskPersistence(task, async () => {
+      await this.loadTaskMessages(task)
+      transcriptRecovered = task.messages.length
       if (typeof input.timeout_ms === 'number') {
         task.timeout_ms = this.parseExecutionTimeout(input.timeout_ms)
       }
@@ -688,7 +910,14 @@ class SubagentRuntimeImpl implements SubagentRuntime {
       throw new SubagentError(SubagentErrorCode.TASK_NOT_FOUND,
         `execution ${input.execution_id || '(current)'} not found for subagent ${task.agentId}`)
     }
-    const messages = execution.completion?.messages ?? task.messages
+    // Read a terminal snapshot locally, without pinning it back into the runtime.
+    let messages = execution.completion?.messages.length ? execution.completion.messages : task.messages
+    if (execution.completionPersisted && execution.completion) {
+      const { getSubagentCompletionRepository } = await this.repositories
+      messages = (await getSubagentCompletionRepository().find(execution.completion.id))?.messages ?? []
+    } else if (!task.messagesLoaded) {
+      messages = await this.readTaskMessages(task)
+    }
     const limit = Number.isFinite(input.limit) ? Math.max(1, Math.min(50, Math.floor(input.limit!))) : 20
     // offset counts from the END: parents diagnose what the child did last,
     // so the default window is the most recent steps.
@@ -737,57 +966,11 @@ class SubagentRuntimeImpl implements SubagentRuntime {
     }
   }
 
-  private async createBatch(input: BatchSpawnSubagentInput, isAsync: boolean): Promise<{
-    items: Array<{ task_index: number; task: SubagentTaskInternal }>
-    rejected: SubagentBatchAcceptance['rejected']
-  }> {
-    const items: Array<{ task_index: number; task: SubagentTaskInternal }> = []
-    const rejected: SubagentBatchAcceptance['rejected'] = []
-    for (const [task_index, spec] of (input.tasks || []).entries()) {
-      try { items.push({ task_index, task: await this.createTask(spec, isAsync) }) }
-      catch (error) { rejected.push({ task_index, reason: error instanceof Error ? error.message : String(error),
-        error_code: error instanceof SubagentError ? error.code : 'BATCH_SPAWN_FAILED' }) }
-    }
-    return { items, rejected }
-  }
-
-  private runBatch(items: Array<{ task_index: number; task: SubagentTaskInternal }>, limit?: number): Promise<void> {
-    const concurrency = Number.isFinite(limit) ? Math.max(1, Math.min(5, Math.floor(Number(limit)))) : 5
-    let cursor = 0
-    return Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, async () => {
-      while (cursor < items.length) {
-        const item = items[cursor++]
-        try { await this.ensureProcessing(item.task) }
-        catch (error) { console.error('[SubagentRuntime] batch execution failed', item.task.agentId, error) }
-      }
-    })).then(() => undefined)
-  }
-
-  async batchStart(input: BatchSpawnSubagentInput): Promise<SubagentBatchAcceptance> {
-    const { items, rejected } = await this.createBatch(input, true)
-    const accepted = items.map(({ task_index, task }) => ({ ...this.receipt(task), task_index }))
-    void this.runBatch(items, input.max_concurrency).catch((error) => console.error('[SubagentRuntime] batch failed', error))
-    return { accepted, rejected }
-  }
-
-  async batchSpawn(input: BatchSpawnSubagentInput): ReturnType<SubagentRuntime['batchSpawn']> {
-    const { items, rejected } = await this.createBatch(input, false)
-    await this.runBatch(items, input.max_concurrency)
-    const completed: Awaited<ReturnType<SubagentRuntime['batchSpawn']>>['completed'] = []
-    const failed = rejected.map((entry) => ({ ...entry, agentId: '' }))
-    for (const { task_index, task } of items) {
-      if (task.status === 'completed') completed.push({ task_index, agentId: task.agentId,
-        content: this.extractLatestAssistantContent(task.messages), usage: task.usage })
-      else failed.push({ task_index, agentId: task.agentId, reason: task.error?.message || task.status,
-        error_code: task.error?.code || 'SUBAGENT_FAILED' })
-    }
-    return { completed, failed: failed.sort((a, b) => a.task_index - b.task_index) }
-  }
-
   private async killTask(
     task: SubagentTaskInternal,
     input: { code: string; message: string; recoverable: boolean }
   ): Promise<void> {
+    await this.loadTaskMessages(task)
     task.stopped = true
     task.running_notification_armed = false
     task.error = { code: input.code, message: input.message }
@@ -795,6 +978,9 @@ class SubagentRuntimeImpl implements SubagentRuntime {
     if (!transitioned) {
       return
     }
+    // Stopping is a terminal state exactly like failing, so the board has to hear
+    // about it — otherwise a stopped member's task reads `running` forever.
+    await this.syncTeamTaskOutcome(task, 'blocked', task.error.message)
     this.clearRunTimeout(task)
     await this.completeExecution(task)
     for (const queued of task.queue) {
@@ -848,8 +1034,9 @@ class SubagentRuntimeImpl implements SubagentRuntime {
         this.detach(task)
         return
       }
-      // Queue drained into a terminal state — release the live loop/context.
-      this.releaseTaskRuntime(task)
+      // Final writes and a concurrent resume share this lane. Release only
+      // after them, so unloading cannot race a continuation's history load.
+      return this.withTaskPersistence(task, async () => this.releaseTaskRuntime(task))
     })
     return task.processingPromise
   }
@@ -899,6 +1086,7 @@ class SubagentRuntimeImpl implements SubagentRuntime {
         if (task.status === 'pending') {
           task.error = { code: 'QUEUE_EMPTY', message: 'All queued messages expired before processing.' }
           await this.applyStatusTransition(task, 'pending', 'failed')
+          await this.syncTeamTaskOutcome(task, 'blocked', task.error.message)
           await this.completeExecution(task)
           this.emitNotification({
             event_type: 'task_notification',
@@ -917,6 +1105,7 @@ class SubagentRuntimeImpl implements SubagentRuntime {
 
       task.execution = queued.execution ?? this.createExecution(false)
       task.terminalPersisting = false
+      task.transcriptPersisted = false
       task.loop = undefined
       task.toolContext = undefined
       task.error = undefined
@@ -1116,6 +1305,7 @@ class SubagentRuntimeImpl implements SubagentRuntime {
           this.clearRunTimeout(task)
           return
         }
+        await this.syncTeamTaskOutcome(task, 'done')
         const completedAt = task.updated_at
         this.clearRunTimeout(task)
 
@@ -1151,6 +1341,7 @@ class SubagentRuntimeImpl implements SubagentRuntime {
           this.clearRunTimeout(task)
           return
         }
+        await this.syncTeamTaskOutcome(task, 'blocked', task.error?.message)
         this.clearRunTimeout(task)
         await this.completeExecution(task)
         this.emitNotification({
@@ -1176,14 +1367,29 @@ class SubagentRuntimeImpl implements SubagentRuntime {
   private ensureLoop(task: SubagentTaskInternal, execution: SubagentExecution, lifecycleVersion: number): AgentLoop {
     if (task.loop) return task.loop
 
-    const deps = execution.deps
-    const contextConfig = execution.contextConfig
+    const deps = execution.deps ?? this.deps
+    const contextConfig = execution.contextConfig ?? deps.contextManager.getConfig()
     // Build the role-specific system prompt by appending behavior suffix
     // based on subagent_type. For 'general-purpose', returns base unchanged.
     const finalSystemPrompt = buildSubagentSystemPrompt(
       SUBAGENT_SYSTEM_PROMPT,
-      task.subagent_type ?? 'general-purpose'
+      task.subagent_type ?? 'general-purpose',
+      { role: task.role, actorId: task.actorId }
     )
+    // Team board: a member sees its own task and where it may write, never the
+    // lead's full plan. The section is built once per task (at spawn) so a
+    // long-running child cannot be re-scoped mid-flight.
+    const teamRunKey = task.teamRunKey
+    const withTeamTask = task.teamTaskId && teamRunKey
+      ? `${finalSystemPrompt}\n\n${buildTeamTaskSection({
+          runKey: teamRunKey,
+          brief: task.teamBrief ?? null,
+          goal: task.teamGoal ?? null,
+          actorId: task.actorId ?? null,
+          taskId: task.teamTaskId,
+          boardError: task.teamBoardError,
+        })}`
+      : finalSystemPrompt
     const subContextManager = new ContextManager({
       maxContextTokens: contextConfig.maxContextTokens,
       reserveTokens: contextConfig.reserveTokens,
@@ -1191,11 +1397,17 @@ class SubagentRuntimeImpl implements SubagentRuntime {
       maxMessageGroups: contextConfig.maxMessageGroups,
       compressionAbsoluteCapEnabled: contextConfig.compressionAbsoluteCapEnabled,
       compressionAbsoluteCap: contextConfig.compressionAbsoluteCap,
-      systemPrompt: finalSystemPrompt,
+      systemPrompt: withTeamTask,
     })
     const taskContext: ToolContext = {
       ...deps.baseToolContext,
       isSubagent: true,
+      // Per-execution identity: the parent's persona must never leak into a child.
+      // `null` means "anonymous" (no persona at all); only `as` names an actor.
+      currentAgentId: task.actorId ?? null,
+      capabilityClasses: task.capabilityClasses,
+      teamTaskId: task.teamTaskId,
+      teamRunKey: task.teamRunKey ?? deps.baseToolContext.teamRunKey,
       conversationHistory: { id: task.agentId, read: async () => [...task.messages] },
       agentMode: task.mode,
       subagentRuntime: undefined,
@@ -1211,11 +1423,19 @@ class SubagentRuntimeImpl implements SubagentRuntime {
 
     task.loop = new AgentLoop({
       provider: deps.provider,
-      toolRegistry: deps.toolRegistry,
+      // Capability boundary: the model does not see tools outside its classes.
+      toolRegistry: task.capabilityClasses
+        ? withCapabilityClasses(deps.toolRegistry, task.capabilityClasses)
+        : deps.toolRegistry,
       contextManager: subContextManager,
-      systemPrompt: finalSystemPrompt,
+      systemPrompt: withTeamTask,
       toolContext: taskContext,
       mode: task.mode,
+      // Inherited, not hardcoded: the parent conversation's setting (0 = ∞).
+      // Undefined leaves AgentLoop's MAX_ITERATIONS fallback in place. Read from
+      // the execution snapshot like every other field here, so a task keeps the
+      // limit it was accepted under instead of chasing a later run's deps.
+      maxIterations: deps.maxIterations,
       // Forward the workspace session id so codex-oauth requests carry
       // prompt_cache_key (see pi-core-runner onPayload). Without it, every
       // subagent request pays full-price input tokens and may land on a
@@ -1234,6 +1454,12 @@ class SubagentRuntimeImpl implements SubagentRuntime {
             summary: this.toSummary(`Subagent "${task.description}" is running.`),
             timestamp: Date.now(),
           })
+        }
+        if (!isToolAllowedByClasses(toolName, task.capabilityClasses)) {
+          return {
+            block: true,
+            reason: `Tool "${toolName}" is outside this execution's capability boundary (allowed: ${(task.capabilityClasses ?? []).join(', ')}).`,
+          }
         }
         if (SUBAGENT_CONTROL_TOOLS.has(toolName)) {
           return {
@@ -1482,6 +1708,7 @@ class SubagentRuntimeImpl implements SubagentRuntime {
         if (task.status === 'completed') {
           return { success: false as const, message: 'TASK_ALREADY_COMPLETED' as const }
         }
+        await this.loadTaskMessages(task)
         const queuedAt = Date.now()
         const result = this.enqueueMessage(task, message, queuedAt, {
           overflow_action: options.overflow_action,
@@ -1528,6 +1755,7 @@ class SubagentRuntimeImpl implements SubagentRuntime {
     if (!transitionedToFailed) {
       return
     }
+    await this.syncTeamTaskOutcome(task, 'blocked', task.error?.message)
     await this.completeExecution(task)
     this.emitNotification({
       event_type: 'task_notification',
@@ -1614,7 +1842,7 @@ class SubagentRuntimeImpl implements SubagentRuntime {
         step,
         timestamp: Date.now(),
       }
-      execution.deps.onNotification?.(notification)
+      execution.deps?.onNotification?.(notification)
     } catch (error) {
       // Step notification failures are non-fatal — don't break the subagent
       console.debug('[SubagentRuntime] step notification delivery failed', {
@@ -1686,7 +1914,7 @@ class SubagentRuntimeImpl implements SubagentRuntime {
       : []
     return {
       id, agentId: task.agentId, executionId: execution.executionId,
-      conversationId: execution.conversationId, projectId: execution.continuation?.projectId ?? execution.deps.baseToolContext.projectId,
+      conversationId: execution.conversationId, projectId: execution.continuation?.projectId ?? execution.deps?.baseToolContext.projectId,
       parentToolCallId: task.parentToolCallId, continuation: execution.continuation,
       notificationMessageId: `subagent-completion:${id}`,
       status: execution.suppressed || task.stopped || !execution.isAsync ? 'suppressed' : 'pending',
@@ -1715,12 +1943,18 @@ class SubagentRuntimeImpl implements SubagentRuntime {
     }
     if (execution.suppressed || task.stopped) completion.status = 'suppressed'
     task.terminalPersisting = false
-    execution.completion = completion
-    this.completions.set(id, completion)
+    // The transcript above is committed, so the store no longer needs its own copy.
+    task.transcriptPersisted = true
+    // SQLite owns the full snapshot. Runtime delivery bookkeeping needs only
+    // the result and status, not another deep copy of every tool payload.
+    const metadata = { ...completion, messages: [] }
+    execution.completion = metadata
+    execution.completionPersisted = execution.isAsync
+    this.completions.set(id, metadata)
     this.publishTask(task)
     if (completion.status === 'pending') {
       try {
-        void Promise.resolve(execution.deps.onCompletionReady?.(completion)).catch((error) => {
+        void Promise.resolve(execution.deps?.onCompletionReady?.(completion)).catch((error) => {
           console.warn('[SubagentRuntime] completion ready callback failed', error)
         })
       } catch (error) { console.warn('[SubagentRuntime] completion ready callback failed', error) }
@@ -1747,6 +1981,14 @@ class SubagentRuntimeImpl implements SubagentRuntime {
     const execution = task.latestExecution
     const previous = useSubagentTaskStore.getState().tasks[task.agentId]
     const deliveryPhase = previous?.executionId === execution?.executionId ? previous?.deliveryPhase : undefined
+    // A finished member's transcript already lives in SQLite, so keeping the live
+    // copy here is pure duplication: this store was the largest retained object in a
+    // production heap (67.7 MB, 48% of the tab). The panel reads the transcript back
+    // on demand, and an unfinished task keeps its messages because nothing else has them.
+    const finished = task.status !== 'pending' && task.status !== 'running'
+    // A stop is a user action taken while the panel is open on the live trace, so
+    // that case keeps its copy until the next reload.
+    const messages = finished && task.transcriptPersisted && !task.stopped ? [] : [...task.messages]
     useSubagentTaskStore.getState().publish({
       agentId: task.agentId, conversationId: execution?.conversationId ?? this.deps.workspaceId,
       parentToolCallId: task.parentToolCallId, name: task.name, description: task.description,
@@ -1758,7 +2000,7 @@ class SubagentRuntimeImpl implements SubagentRuntime {
         ? deliveryPhase
         : execution?.completion?.status === 'pending'
           ? deliveryPhase ?? 'pending'
-          : execution?.completion?.status ?? deliveryPhase, messages: [...task.messages],
+          : execution?.completion?.status ?? deliveryPhase, messages,
     })
   }
 
@@ -1782,6 +2024,7 @@ class SubagentRuntimeImpl implements SubagentRuntime {
 
   /** Capture the current row only after entering its persistence lane. */
   private async writeTask(task: SubagentTaskInternal): Promise<void> {
+    await this.loadTaskMessages(task)
     const { getSubagentRepository } = await this.repositories
     if (this.disposed) throw new Error('Subagent runtime is disposed.')
     await getSubagentRepository().saveBatch(this.deps.workspaceId, [this.toStoredTask(task)])
@@ -1791,10 +2034,11 @@ class SubagentRuntimeImpl implements SubagentRuntime {
     if (this.disposed) return
     try {
       await Promise.all(Array.from(this.tasks.values(), task => this.withTaskPersistence(task, async () => {
-        if (this.disposed || !task.accepted || task.terminalPersisting) return
+        if (this.disposed || !task.accepted || task.terminalPersisting || !task.messagesLoaded) return
+        const snapshot = this.toStoredTask(task)
         const { getSubagentRepository } = await this.repositories
         if (this.disposed) return
-        await getSubagentRepository().saveBatch(this.deps.workspaceId, [this.toStoredTask(task)])
+        await getSubagentRepository().saveBatch(this.deps.workspaceId, [snapshot])
       })))
     } catch {
       // ignore persistence failures for runtime continuity
@@ -1805,7 +2049,7 @@ class SubagentRuntimeImpl implements SubagentRuntime {
     try {
       const { getSubagentRepository } = await this.repositories
       const repo = getSubagentRepository()
-      const parsed = await repo.findByWorkspaceId(this.deps.workspaceId)
+      const parsed = await repo.findMetadataByWorkspaceId(this.deps.workspaceId)
       for (const item of parsed) {
         const revived: SubagentTaskInternal = {
           agentId: item.agentId,
@@ -1822,7 +2066,8 @@ class SubagentRuntimeImpl implements SubagentRuntime {
           updated_at: item.updated_at,
           last_activity_at: item.last_activity_at,
           mode: item.mode,
-          messages: item.messages,
+          messages: [],
+          messagesLoaded: false,
           queue: [],
           max_queue_size: DEFAULT_QUEUE_SIZE,
           overflow_action: DEFAULT_OVERFLOW_ACTION,
@@ -1839,21 +2084,35 @@ class SubagentRuntimeImpl implements SubagentRuntime {
           transcriptWriter: undefined,
           subagent_type: (item.subagent_type as SubagentType | undefined) ?? 'general-purpose',
           parentToolCallId: item.parentToolCallId,
+          capabilityClasses: item.execution?.capabilityClasses,
+          // Identity is metadata, not live state: a restored member must keep its
+          // persona and its board task instead of resuming anonymously.
+          actorId: item.actorId ?? undefined,
+          role: item.role,
+          teamTaskId: item.teamTaskId,
+          teamRunKey: item.teamRunKey,
         }
-        const execution = item.execution
-          ? { ...this.createExecution(item.execution.isAsync), ...item.execution }
-          : { ...this.createExecution(false), executionId: `legacy:${item.agentId}` }
+        const execution: SubagentExecution = item.execution
+          ? { ...item.execution }
+          : { executionId: `legacy:${item.agentId}`, isAsync: false,
+              conversationId: this.deps.workspaceId, suppressed: false, changedPaths: [] }
         revived.execution = execution
+        // Revived from SQLite, so the persisted copy already owns the transcript.
+        revived.transcriptPersisted = true
         revived.latestExecution = execution
         if (revived.status !== 'pending' && revived.status !== 'running') {
           const { getSubagentCompletionRepository } = await this.repositories
-          const persisted = item.execution ? await getSubagentCompletionRepository().find(`${item.agentId}:${execution.executionId}`) : null
+          const persisted = item.execution ? await getSubagentCompletionRepository().findMetadata(`${item.agentId}:${execution.executionId}`) : null
           const completion = persisted ?? {
             ...this.makeCompletion(revived, execution),
-            result: revived.status === 'completed' ? this.extractLatestAssistantContent(revived.messages) : '',
+            // Hydration reads metadata only, so the transcript is not loaded
+            // here: an empty result is honest, and readers fall back to the
+            // transcript they load on demand instead of trusting this value.
+            result: '',
             status: 'suppressed' as const,
           }
           execution.completion = completion
+          execution.completionPersisted = !!persisted
           this.completions.set(completion.id, completion)
         }
         this.tasks.set(revived.agentId, revived)
@@ -1866,6 +2125,23 @@ class SubagentRuntimeImpl implements SubagentRuntime {
     } catch {
       // ignore hydration failures; runtime remains usable in-memory
     }
+  }
+
+  private async readTaskMessages(task: SubagentTaskInternal): Promise<Message[]> {
+    const { getSubagentRepository } = await this.repositories
+    const stored = await getSubagentRepository().findByAgentId(this.deps.workspaceId, task.agentId)
+    // `createTask` persists the row before any message exists, so an empty array
+    // is the normal shape of a task that was interrupted — `??` would take it and
+    // drop a transcript that is sitting in OPFS.
+    if (stored?.messages?.length) return stored.messages
+    return this.loadTranscriptMessages(task.agentId)
+  }
+
+  /** Restore exactly one task before a write or a continuation. */
+  private async loadTaskMessages(task: SubagentTaskInternal): Promise<void> {
+    if (task.messagesLoaded) return
+    task.messages = await this.readTaskMessages(task)
+    task.messagesLoaded = true
   }
 
   private toStoredTask(task: SubagentTaskInternal): {
@@ -1887,11 +2163,18 @@ class SubagentRuntimeImpl implements SubagentRuntime {
     subagent_type: SubagentType
     parentToolCallId?: string
     timeout_ms?: number
+    actorId?: string | null
+    role?: string
+    teamTaskId?: string
+    teamRunKey?: string
   } {
     return {
       agentId: task.agentId,
       workspaceId: this.deps.workspaceId,
-      execution: task.latestExecution ? this.executionMetadata(task.latestExecution) : undefined,
+      execution: task.latestExecution ? {
+        ...this.executionMetadata(task.latestExecution),
+        capabilityClasses: task.capabilityClasses ? [...task.capabilityClasses] : undefined,
+      } : undefined,
       name: task.name,
       description: task.description,
       status: task.queue.length && task.latestExecution !== task.execution && !task.stopped ? 'pending' : task.status,
@@ -1907,6 +2190,10 @@ class SubagentRuntimeImpl implements SubagentRuntime {
       subagent_type: task.subagent_type,
       parentToolCallId: task.parentToolCallId,
       timeout_ms: task.timeout_ms,
+      actorId: task.actorId,
+      role: task.role,
+      teamTaskId: task.teamTaskId,
+      teamRunKey: task.teamRunKey,
     }
   }
 
@@ -2021,6 +2308,7 @@ export function getOrCreateSubagentRuntime(input: SubagentRuntimeDeps): Subagent
     toolRegistry: input.toolRegistry,
     contextManager: input.contextManager,
     baseToolContext: input.baseToolContext,
+    maxIterations: input.maxIterations,
     onNotification: input.onNotification,
     getWorkspaceDir: input.getWorkspaceDir,
   }

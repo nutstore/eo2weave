@@ -11,6 +11,11 @@ interface CompletionRow {
   updated_at: number
 }
 
+// Delivery bookkeeping never needs the archived transcript. Strip it in SQLite
+// before crossing the worker boundary or retaining a completion for a parent run.
+const METADATA_COLUMNS = `id, json_set(snapshot_json, '$.messages', json('[]')) AS snapshot_json,
+  status, notification_message_id, parent_run_id, delivery_error, updated_at`
+
 function fromRow(row: CompletionRow): SubagentCompletion {
   return {
     ...parseJSON<SubagentCompletion>(row.snapshot_json, {} as SubagentCompletion),
@@ -76,9 +81,18 @@ export class SubagentCompletionRepository {
     return row ? fromRow(row) : null
   }
 
+  /** Delivery state and result only; full transcripts are read on demand. */
+  async findMetadata(id: string): Promise<SubagentCompletion | null> {
+    const row = await getSQLiteDB().queryFirst<CompletionRow>(
+      `SELECT ${METADATA_COLUMNS} FROM subagent_completions WHERE id = ?`,
+      [id]
+    )
+    return row ? fromRow(row) : null
+  }
+
   async listProcessing(conversationId: string): Promise<SubagentCompletion[]> {
     const rows = await getSQLiteDB().queryAll<CompletionRow>(
-      "SELECT * FROM subagent_completions WHERE conversation_id = ? AND status = 'processing' ORDER BY created_at, id",
+      `SELECT ${METADATA_COLUMNS} FROM subagent_completions WHERE conversation_id = ? AND status = 'processing' ORDER BY created_at, id`,
       [conversationId]
     )
     return rows.map(fromRow)
@@ -86,7 +100,7 @@ export class SubagentCompletionRepository {
 
   async listRecoverable(conversationId?: string): Promise<SubagentCompletion[]> {
     const rows = await getSQLiteDB().queryAll<CompletionRow>(
-      `SELECT * FROM subagent_completions WHERE status IN ('pending', 'delivered', 'blocked', 'error')
+      `SELECT ${METADATA_COLUMNS} FROM subagent_completions WHERE status IN ('pending', 'delivered', 'blocked', 'error')
        ${conversationId ? 'AND conversation_id = ?' : ''} ORDER BY created_at, id`,
       conversationId ? [conversationId] : []
     )
@@ -101,7 +115,7 @@ export class SubagentCompletionRepository {
     if (!ids.length) return []
     return getSQLiteDB().transaction(async (tx) => {
       const rows = await tx.queryAll<CompletionRow & { id: string }>(
-        `SELECT * FROM subagent_completions WHERE id IN (${ids.map(() => '?').join(', ')})
+        `SELECT ${METADATA_COLUMNS} FROM subagent_completions WHERE id IN (${ids.map(() => '?').join(', ')})
          AND status = 'pending' AND notification_message_id IS NULL`,
         ids
       )

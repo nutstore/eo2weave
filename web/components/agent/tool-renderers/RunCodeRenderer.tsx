@@ -42,6 +42,7 @@ interface RunCodeMeta {
 interface StepsCtx {
   toolCallId?: string
   conversationId?: string
+  depth?: number
   args: Record<string, unknown>
   result: Record<string, unknown> | null
 }
@@ -98,6 +99,7 @@ function AgentSteps({ ctx }: { ctx: StepsCtx }) {
               key={task.agentId}
               agentId={task.agentId}
               conversationId={ctx.conversationId}
+              depth={ctx.depth}
               name={task.name || task.description}
               status={task.status}
             />
@@ -108,6 +110,7 @@ function AgentSteps({ ctx }: { ctx: StepsCtx }) {
                   key={step.index}
                   agentId={step.agentId}
                   conversationId={ctx.conversationId}
+                  depth={ctx.depth}
                   name={step.name || t('toolCallDisplay.workflowStepFallback', { index: step.index + 1 })}
                   status={step.status}
                 />

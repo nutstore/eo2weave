@@ -30,7 +30,7 @@ test('opening the Chrome store also shows the experience guide', async ({ page }
 
 test('the header updates its usage entry when the extension connects or disconnects', async ({ page }) => {
   await page.addInitScript(() => {
-    ;(window as Window & { __agentWeb?: { ready: boolean } }).__agentWeb = { ready: true }
+    (window as Window & { __agentWeb?: { ready: boolean } }).__agentWeb = { ready: true }
   })
   await page.goto('/')
   const header = page.locator('.site-header')

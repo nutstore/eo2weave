@@ -1,12 +1,13 @@
 import { act, render, screen } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { SubagentDetailPanel } from '../SubagentDetailPanel'
+import { MAX_SUBAGENT_DEPTH } from '../subagent-depth'
 import { useSubagentTaskStore } from '@/store/subagent-task.store'
 
-const findByWorkspaceId = vi.fn()
+const findByAgentId = vi.fn()
 
 vi.mock('@/sqlite', () => ({
-  getSubagentRepository: () => ({ findByWorkspaceId }),
+  getSubagentRepository: () => ({ findByAgentId }),
 }))
 
 vi.mock('@/store/conversation-runtime.store', () => ({
@@ -28,6 +29,21 @@ vi.mock('../ReasoningSection', () => ({
 beforeEach(() => useSubagentTaskStore.setState({ tasks: {} }))
 
 describe('SubagentDetailPanel', () => {
+  it('stops rendering a transcript nested past the depth limit', () => {
+    // Deep nesting re-reads every ancestor's transcript, so the panel refuses
+    // instead of expanding forever.
+    const task = { agentId: 'deep', conversationId: 'original', description: 'Deep', role: 'explorer' as const, status: 'completed' as const, createdAt: 1, updatedAt: 1, lastActivity: 1, isAsync: true, messages: [{ id: 'deep-1', role: 'assistant' as const, content: 'too deep to show', timestamp: 1 }] }
+    useSubagentTaskStore.getState().publish(task)
+    render(<SubagentDetailPanel agentId="deep" conversationId="original" depth={MAX_SUBAGENT_DEPTH + 1} />)
+    expect(screen.queryByText('too deep to show')).toBeNull()
+  })
+
+  it('still renders a transcript at the depth limit', () => {
+    const task = { agentId: 'at-limit', conversationId: 'original', description: 'Limit', role: 'explorer' as const, status: 'completed' as const, createdAt: 1, updatedAt: 1, lastActivity: 1, isAsync: true, messages: [{ id: 'limit-1', role: 'assistant' as const, content: 'still visible', timestamp: 1 }] }
+    useSubagentTaskStore.getState().publish(task)
+    render(<SubagentDetailPanel agentId="at-limit" conversationId="original" depth={MAX_SUBAGENT_DEPTH} />)
+    expect(screen.getByText('still visible')).toBeInTheDocument()
+  })
   it('keeps receiving execution traces after the parent draft is cleared', async () => {
     const task = { agentId: 'live-child', conversationId: 'original', description: 'Inspect', role: 'explorer' as const, status: 'running' as const, createdAt: 1, updatedAt: 1, lastActivity: 1, isAsync: true, messages: [{ id: 'live', role: 'assistant' as const, content: 'Reading files', timestamp: 1 }] }
     useSubagentTaskStore.getState().publish(task)
@@ -38,52 +54,76 @@ describe('SubagentDetailPanel', () => {
   })
 
   it('restores saved subagent messages when live draft state is gone', async () => {
-    findByWorkspaceId.mockResolvedValueOnce([
-      {
-        agentId: 'subagent-1',
-        messages: [
-          {
-            id: 'assistant-1',
-            role: 'assistant',
-            content: '刷新后恢复的回答',
-            timestamp: 1,
-          },
-        ],
-      },
-    ])
+    findByAgentId.mockResolvedValueOnce({
+      agentId: 'subagent-1',
+      messages: [
+        {
+          id: 'assistant-1',
+          role: 'assistant',
+          content: '刷新后恢复的回答',
+          timestamp: 1,
+        },
+      ],
+    })
 
     render(<SubagentDetailPanel agentId="subagent-1" conversationId="conversation-1" />)
 
     expect(await screen.findByText('刷新后恢复的回答')).toBeInTheDocument()
-    expect(findByWorkspaceId).toHaveBeenCalledWith('conversation-1')
+    // One task by id: parsing every transcript of the conversation to show one
+    // was the largest allocation the panel made.
+    expect(findByAgentId).toHaveBeenCalledWith('conversation-1', 'subagent-1')
+  })
+
+  it('reads the transcript from SQLite when a hydrated projection carries metadata only', async () => {
+    // Hydration publishes metadata with an empty transcript, so \"no messages in
+    // the store\" must mean \"not loaded\", not \"nothing to show\".
+    useSubagentTaskStore.getState().publish({
+      agentId: 'hydrated-child',
+      conversationId: 'conversation-1',
+      description: 'Historical task',
+      role: 'explorer' as const,
+      status: 'completed' as const,
+      createdAt: 1,
+      updatedAt: 1,
+      lastActivity: 1,
+      isAsync: false,
+      messages: [],
+    })
+    findByAgentId.mockResolvedValueOnce({
+      agentId: 'hydrated-child',
+      messages: [{ id: 'm1', role: 'assistant', content: '从 SQLite 取回的历史回答', timestamp: 1 }],
+    })
+
+    render(<SubagentDetailPanel agentId="hydrated-child" conversationId="conversation-1" />)
+
+    expect(await screen.findByText('从 SQLite 取回的历史回答')).toBeInTheDocument()
+    expect(findByAgentId).toHaveBeenCalledWith('conversation-1', 'hydrated-child')
   })
 
   it('restores the actual tool name, arguments, error result, and original conversation', async () => {
-    findByWorkspaceId.mockResolvedValueOnce([{ agentId: 'saved-tool-child', messages: [
+    findByAgentId.mockResolvedValueOnce({ agentId: 'saved-tool-child', messages: [
       { id: 'assistant', role: 'assistant', content: '', timestamp: 1, toolCalls: [{ id: 'read-call', type: 'function', function: { name: 'read', arguments: '{"path":"notes.md"}' } }] },
       { id: 'result', role: 'tool', toolCallId: 'read-call', content: '{"error":"Permission denied"}', timestamp: 2 },
-    ] }])
+    ] })
     render(<SubagentDetailPanel agentId="saved-tool-child" conversationId="original" />)
     const tool = await screen.findByTestId('tool-call')
     expect(tool).toHaveTextContent('read:{"path":"notes.md"}:{"error":"Permission denied"}:original')
   })
 
   it('passes a persisted reasoning duration to the reasoning section', async () => {
-    findByWorkspaceId.mockResolvedValueOnce([
-      {
-        agentId: 'subagent-1',
-        messages: [
-          {
-            id: 'assistant-1',
-            role: 'assistant',
-            content: 'Done',
-            reasoning: 'Analyzing',
-            reasoningDurationMs: 2_500,
-            timestamp: 1,
-          },
-        ],
-      },
-    ])
+    findByAgentId.mockResolvedValueOnce({
+      agentId: 'subagent-1',
+      messages: [
+        {
+          id: 'assistant-1',
+          role: 'assistant',
+          content: 'Done',
+          reasoning: 'Analyzing',
+          reasoningDurationMs: 2_500,
+          timestamp: 1,
+        },
+      ],
+    })
 
     render(<SubagentDetailPanel agentId="subagent-1" conversationId="conversation-1" />)
 

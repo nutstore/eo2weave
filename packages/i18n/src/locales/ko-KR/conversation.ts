@@ -37,6 +37,7 @@ export const conversation = {
         rejected: "제출되지 않음",
         restoring: "저장된 실행 기록 복원 중…",
         noTrace: "저장된 실행 기록이 없습니다.",
+        nestedLimit: "중첩이 너무 깊습니다 — 각 하위 에이전트의 메시지에서 직접 여세요.",
         waiting: "응답 대기 중…",
     },
     directChat: {

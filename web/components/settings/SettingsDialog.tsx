@@ -122,21 +122,6 @@ function ExperimentalToggle({ title, description, checked, onChange }: Experimen
   )
 }
 
-/** Batch spawn toggle — uses reactive zustand selector so the switch updates immediately */
-function BatchSpawnToggle() {
-  const t = useT()
-  const enableBatchSpawn = useSettingsStore((s) => s.enableBatchSpawn)
-  const setEnableBatchSpawn = useSettingsStore((s) => s.setEnableBatchSpawn)
-  return (
-    <ExperimentalToggle
-      title={t('settings.batchSpawn')}
-      description={t('settings.batchSpawnDesc')}
-      checked={enableBatchSpawn}
-      onChange={setEnableBatchSpawn}
-    />
-  )
-}
-
 // =============================================================================
 // Version Info Section (within General tab)
 // =============================================================================
@@ -1048,9 +1033,6 @@ const SettingsDialogContent = forwardRef<
                   </p>
                 </div>
               </div>
-
-              {/* batch_spawn toggle */}
-              <BatchSpawnToggle />
 
             </div>
           )}

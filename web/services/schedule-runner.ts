@@ -20,6 +20,7 @@ import { writeRunLog, truncateForLog, type ToolCallEntry, type LLMCallEntry } fr
 import type { ToolContext } from '@/agent/tools/tool-types'
 import type { PiAIProvider } from '@/agent/llm/pi-ai-provider'
 import { useSettingsStore } from '@/store/settings.store'
+import { resolveIterationLimit } from '@/agent/loop/iteration-limit'
 import { useFolderAccessStore } from '@/store/folder-access.store'
 import { LLM_PROVIDER_CONFIGS, isCustomProviderType, type LLMProviderType } from '@/agent/providers/types'
 import { describeCredentialFailure } from '@/agent/providers/credential-failure'
@@ -111,6 +112,9 @@ export async function runSchedule(scheduleId: string, options?: { force?: boolea
       systemPrompt: SCHEDULE_SYSTEM_PROMPT,
       toolContext,
       mode: 'act',
+      // Same setting as the interactive conversation (0 = unlimited): a
+      // scheduled run must not silently stop at the loop's default.
+      maxIterations: resolveIterationLimit(useSettingsStore.getState().maxIterations),
       beforeToolCall: ({ toolName, args }) => {
         const entry: ToolCallEntry = {
           index: ++toolIndex,

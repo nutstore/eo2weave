@@ -97,11 +97,11 @@ export function onSubagentCompletionReady(completion: SubagentCompletion): void 
 export async function recoverSubagentContinuations(conversationIds: string[]): Promise<void> {
   const repository = getSubagentCompletionRepository()
   for (const id of conversationIds) {
-    const tasks = await getSubagentRepository().findByWorkspaceId(id)
+    const tasks = await getSubagentRepository().findMetadataByWorkspaceId(id)
     for (const task of tasks) {
       const interrupted = task.status === 'pending' || task.status === 'running'
       const completion = task.execution
-        ? await repository.find(`${task.agentId}:${task.execution.executionId}`)
+        ? await repository.findMetadata(`${task.agentId}:${task.execution.executionId}`)
         : null
       useSubagentTaskStore.getState().publish({
         agentId: task.agentId,
@@ -123,7 +123,11 @@ export async function recoverSubagentContinuations(conversationIds: string[]): P
         acknowledged: task.execution?.acknowledged,
         deliveryError: completion?.deliveryError,
         deliveryPhase: completion?.status,
-        messages: task.messages,
+        // Metadata only. A hydrated transcript used to land here in full, so a
+        // long conversation kept every past member's messages (with their tool
+        // results) alive in the store for the lifetime of the tab. The panel
+        // reads the transcript from SQLite when it is actually opened.
+        messages: [],
       })
     }
     if (tasks.length) knownConversations.add(id)

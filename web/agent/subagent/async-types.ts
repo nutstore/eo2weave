@@ -1,4 +1,5 @@
 import type { Message } from '@/agent/message-types'
+import type { ToolCapabilityClass } from '@/agent/tools/tool-capabilities'
 import type { SubagentTaskStatus, SubagentTaskUsage } from '@/agent/tools/tool-types'
 
 /** Serializable origin of a child execution. Credentials belong to the provider, never this record. */
@@ -29,6 +30,8 @@ export interface SubagentExecutionMetadata {
   suppressed: boolean
   acknowledged?: boolean
   changedPaths: string[]
+  /** Effective task boundary, preserved across reloads and subsequent attempts. */
+  capabilityClasses?: ToolCapabilityClass[]
 }
 
 export interface SubagentAcceptedReceipt {
@@ -36,11 +39,6 @@ export interface SubagentAcceptedReceipt {
   status: 'pending' | 'running'
   description: string
   name?: string
-}
-
-export interface SubagentBatchAcceptance {
-  accepted: Array<SubagentAcceptedReceipt & { task_index: number }>
-  rejected: Array<{ task_index: number; reason: string; error_code: string }>
 }
 
 /** An immutable execution snapshot; task rows can move on to a later attempt. */

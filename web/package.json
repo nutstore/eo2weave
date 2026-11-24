@@ -15,6 +15,7 @@
     "preview:prod": "pnpm build && pnpm preview",
     "test": "vitest",
     "test:run": "vitest run",
+    "test:config": "node --test scripts/__tests__/*.test.mjs",
     "test:ui": "vitest --ui",
     "test:coverage": "vitest run --coverage",
     "test:watch": "vitest --watch",

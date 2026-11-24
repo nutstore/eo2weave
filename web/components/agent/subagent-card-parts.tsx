@@ -5,6 +5,7 @@ import { ChevronDown, ChevronRight } from 'lucide-react'
 import { useT } from '@/i18n'
 import { selectSubagentTask, useSubagentTaskStore } from '@/store/subagent-task.store'
 import { SubagentDetailPanel } from './SubagentDetailPanel'
+import { MAX_SUBAGENT_DEPTH } from './subagent-depth'
 
 /**
  * Shared subagent presentation pieces.
@@ -25,7 +26,7 @@ export function SubagentStatusBadge({ status }: { status: string }) {
 }
 
 /** One child agent: name + live status badge, expanding into its transcript. */
-export function SubagentHistoryRow({ agentId, conversationId, name, status }: { agentId: string; conversationId?: string; name?: string; status?: string }) {
+export function SubagentHistoryRow({ agentId, conversationId, name, status, depth = 0 }: { agentId: string; conversationId?: string; name?: string; status?: string; depth?: number }) {
   const t = useT()
   const task = useSubagentTaskStore(selectSubagentTask(agentId))
   const [expanded, setExpanded] = useState(false)
@@ -44,10 +45,14 @@ export function SubagentHistoryRow({ agentId, conversationId, name, status }: { 
       {badgeStatus && <SubagentStatusBadge status={badgeStatus} />}
     </button>
     {expanded && <div id={detailId} className="min-w-0 overflow-x-hidden">
-      <Suspense fallback={<div className="py-2 text-xs text-neutral-400">{t('common.loading')}</div>}>
-        <SubagentDetailPanel agentId={agentId} conversationId={conversationId} />
-        {task?.error && <p className="break-words py-1 text-xs text-red-600 dark:text-red-400">{task.error.message}</p>}
-      </Suspense>
+      {depth + 1 > MAX_SUBAGENT_DEPTH
+        // Refuse before mounting the panel: mounting it would fetch another
+        // transcript for a level we are not going to show anyway.
+        ? <p className="px-3 py-2 text-xs text-neutral-400">{t('conversation.backgroundTasks.nestedLimit')}</p>
+        : <Suspense fallback={<div className="py-2 text-xs text-neutral-400">{t('common.loading')}</div>}>
+            <SubagentDetailPanel agentId={agentId} conversationId={conversationId} depth={depth + 1} />
+            {task?.error && <p className="break-words py-1 text-xs text-red-600 dark:text-red-400">{task.error.message}</p>}
+          </Suspense>}
     </div>}
   </div>
 }

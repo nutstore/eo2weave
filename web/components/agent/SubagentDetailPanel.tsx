@@ -7,6 +7,7 @@ import { Loader2 } from 'lucide-react'
 import type { DraftAssistantStep, Message } from '@/agent/message-types'
 import { getSubagentRepository } from '@/sqlite'
 import { ToolCallDisplay } from './ToolCallDisplay'
+import { MAX_SUBAGENT_DEPTH } from './subagent-depth'
 import { ReasoningSection } from './ReasoningSection'
 import { MarkdownContent } from './MarkdownContent'
 import { useStreamingMarkdown } from './use-streaming-markdown'
@@ -75,6 +76,7 @@ function renderSubagentStep(
   step: DraftAssistantStep,
   toolResults: Map<string, string>,
   conversationId?: string,
+  depth = 0,
 ): React.ReactNode {
   if (step.type === 'reasoning') {
     if (!step.content) return null
@@ -108,6 +110,7 @@ function renderSubagentStep(
   return (
     <ToolCallDisplay
       conversationId={conversationId}
+      depth={depth}
       toolCall={step.toolCall}
       result={step.result ?? toolResults.get(step.toolCall.id)}
       isExecuting={step.streaming && !(step.result ?? toolResults.get(step.toolCall.id))}
@@ -170,11 +173,14 @@ interface SubagentDetailPanelProps {
   agentId: string
   /** conversationId is also the workspace ID used by persisted subagent tasks. */
   conversationId?: string
+  /** Panel nesting level. The main conversation is 0; see MAX_SUBAGENT_DEPTH. */
+  depth?: number
 }
 
 export const SubagentDetailPanel = memo(function SubagentDetailPanel({
   agentId,
   conversationId,
+  depth = 0,
 }: SubagentDetailPanelProps) {
   const t = useT()
   const task = useSubagentTaskStore(selectSubagentTask(agentId))
@@ -186,16 +192,19 @@ export const SubagentDetailPanel = memo(function SubagentDetailPanel({
   const [isLoadingPersisted, setIsLoadingPersisted] = useState(false)
 
   useEffect(() => {
-    if (draft || projection || !conversationId) return
+    // A hydrated projection carries metadata only, so an empty transcript means
+    // "not loaded yet" rather than "no messages".
+    const hasTranscript = !!projection?.messages.length
+    if (draft || !conversationId || (projection && hasTranscript)) return
     setPersistedMessages(null)
 
     let cancelled = false
     setIsLoadingPersisted(true)
     void getSubagentRepository()
-      .findByWorkspaceId(conversationId)
-      .then((tasks) => {
+      .findByAgentId(conversationId, agentId)
+      .then((task) => {
         if (!cancelled) {
-          setPersistedMessages(tasks.find((task) => task.agentId === agentId)?.messages ?? [])
+          setPersistedMessages(task?.messages ?? [])
         }
       })
       .catch(() => {
@@ -209,7 +218,12 @@ export const SubagentDetailPanel = memo(function SubagentDetailPanel({
   }, [agentId, conversationId, draft, projection])
 
   const persisted = useMemo(
-    () => buildPersistedSteps(projection?.messages ?? persistedMessages ?? []),
+    () => {
+      // `[]` is truthy, so the live transcript has to be checked by length: an
+      // empty projection means the transcript lives in SQLite, not in memory.
+      const live = projection?.messages
+      return buildPersistedSteps(live?.length ? live : persistedMessages ?? [])
+    },
     [projection?.messages, persistedMessages]
   )
 
@@ -252,11 +266,21 @@ export const SubagentDetailPanel = memo(function SubagentDetailPanel({
     )
   }
 
+  if (depth > MAX_SUBAGENT_DEPTH) {
+    // Rendering further would fetch another transcript per level and re-render the
+    // same messages once per ancestor, so stop here and say so.
+    return (
+      <div className="px-3 py-2 text-xs text-neutral-400">
+        {t('conversation.backgroundTasks.nestedLimit')}
+      </div>
+    )
+  }
+
   return (
     <div className="min-w-0 space-y-1.5 overflow-x-hidden px-1 py-1">
       {steps.map((step) => (
         <div key={step.id}>
-          {renderSubagentStep(step, toolResults, conversationId)}
+          {renderSubagentStep(step, toolResults, conversationId, depth)}
         </div>
       ))}
     </div>

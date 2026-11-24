@@ -39,8 +39,13 @@ const MAX_GIT_HEAD_BYTES = 512
  * Git forbids control characters in ref names, so a HEAD containing them was
  * not written by git. Bidi overrides/isolates are also rejected: they are
  * valid UTF-8 text but let a repository reorder the rendered badge.
+ *
+ * `\p{Cc}` (with the `u` flag) is the Unicode "control" category — the same
+ * set as \u0000-\u001f plus \u007f — without writing the raw range, which
+ * eslint's no-control-regex rule flags even when the control characters are
+ * exactly what the pattern is meant to detect.
  */
-const UNSAFE_REF_CHARS_RE = /[\u0000-\u001f\u007f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/
+const UNSAFE_REF_CHARS_RE = /[\p{Cc}\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/u
 
 /**
  * Parse the contents of `.git/HEAD`.

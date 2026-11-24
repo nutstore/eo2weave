@@ -231,7 +231,9 @@ export const webSearchDefinition: ToolDefinition = {
       'For automatic fallback, inspect `fallback`, `requestedProvider`, and `provider` and tell the',
       'user which engine actually produced the results.',
       '',
-      'This tool requires the Browser Extension to be installed and active.',
+      'Requires the Browser Extension: it performs the network request. If a call returns',
+      'BRIDGE_UNAVAILABLE, the extension is not installed or not enabled — tell the user that, and',
+      'do not retry (that error is not retryable).',
     ].join('\n'),
     parameters: {
       type: 'object',
@@ -262,7 +264,12 @@ export const webSearchDefinition: ToolDefinition = {
 export const webSearchExecutor: ToolExecutor = async (args) => {
   const bridge = getAgentWeb()
   if (!bridge) {
-    return toolErrorJson('web_search', 'BRIDGE_UNAVAILABLE', 'Browser Extension not detected. Please install and enable the extension to use web search.')
+    return toolErrorJson(
+      'web_search',
+      'BRIDGE_UNAVAILABLE',
+      'Browser Extension not detected: web search is performed by the extension, so this call could not run.',
+      { hint: 'Tell the user that web search needs the browser extension and ask them to install/enable it — and if they say it is already installed, ask them to reload this page (the bridge is injected at page load). Do not retry: this error is not retryable.' },
+    )
   }
 
   const query = args.query as string
@@ -329,7 +336,9 @@ export const webFetchDefinition: ToolDefinition = {
       '',
       'Returns: body (Markdown for HTML, raw for everything else), HTTP status, headers, and readability metadata (title, excerpt, byline) for HTML pages.',
       '',
-      'This tool requires the Browser Extension to be installed and active.',
+      'Requires the Browser Extension: it performs the network request. If a call returns',
+      'BRIDGE_UNAVAILABLE, the extension is not installed or not enabled — tell the user that, and',
+      'do not retry (that error is not retryable).',
     ].join('\n'),
     parameters: {
       type: 'object',
@@ -382,7 +391,12 @@ export const webFetchDefinition: ToolDefinition = {
 export const webFetchExecutor: ToolExecutor = async (args, context) => {
   const bridge = getAgentWeb()
   if (!bridge) {
-    return toolErrorJson('web_fetch', 'BRIDGE_UNAVAILABLE', 'Browser Extension not detected. Please install and enable the extension to use web fetch.')
+    return toolErrorJson(
+      'web_fetch',
+      'BRIDGE_UNAVAILABLE',
+      'Browser Extension not detected: web fetch is performed by the extension, so this request could not run.',
+      { hint: 'Tell the user that web fetch needs the browser extension and ask them to install/enable it — and if they say it is already installed, ask them to reload this page (the bridge is injected at page load). Do not retry: this error is not retryable.' },
+    )
   }
 
   const url = args.url as string
@@ -483,9 +497,10 @@ export const webFetchExecutor: ToolExecutor = async (args, context) => {
 
 export const webBridgePromptDoc: ToolPromptDoc = {
   category: 'web',
-  section: '### Web Tools (requires Browser Extension)',
+  section: '### Web Tools (performed by the Browser Extension)',
   lines: [
     '- `web_search(query, count?, provider?)` - Search the web (auto-selects DuckDuckGo or Baidu based on region)',
     '- `web_fetch(url, ...)` - Fetch the content of a web page by URL',
+    '- Both are always available; the extension performs the request. On BRIDGE_UNAVAILABLE, guide the user to install/enable the extension instead of retrying.',
   ],
 }

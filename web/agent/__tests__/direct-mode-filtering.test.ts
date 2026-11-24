@@ -132,10 +132,10 @@ describe('directMode tool filtering', () => {
       expect(projectNames, `project must register ${name}`).toContain(name)
       expect(directNames, `direct must NOT register ${name}`).not.toContain(name)
     }
-    // Retained capabilities survive in direct mode. (web_search/web_fetch are
-    // web-bridge tools registered only when the Browser Extension is detected —
-    // absent from this bare registry, so not asserted here.)
-    for (const name of ['run_python', 'bash', 'spawn_subagent', 'manage_schedule']) {
+    // Retained capabilities survive in direct mode. web_search/web_fetch are
+    // registered unconditionally (the extension is optional at runtime), so a
+    // standalone chat keeps them too — a bare registry must expose them.
+    for (const name of ['run_python', 'bash', 'spawn_subagent', 'manage_schedule', 'web_search', 'web_fetch']) {
       expect(directNames, `direct must keep ${name}`).toContain(name)
     }
   })
@@ -289,11 +289,14 @@ describe('directMode tool filtering', () => {
     const names = (direct: boolean) =>
       registry.getToolDefinitionsForMode('act', { directMode: direct }).map((d) => d.function.name)
 
-    // delegate_to is registered in project contexts.
-    expect(names(false)).toContain('delegate_to')
+    // db_query is registered in project contexts.
     expect(names(false)).toContain('db_query')
-    expect(names(true)).not.toContain('delegate_to')
     expect(names(true)).not.toContain('db_query')
+    // `delegate_to` was retired in favour of spawn_subagent: it must not
+    // reappear in either mode, otherwise the roster prompt and the tool surface
+    // drift apart again.
+    expect(names(false)).not.toContain('delegate_to')
+    expect(names(true)).not.toContain('delegate_to')
   })
 
   it('project-bound tools are rejected by execute()/executeNoRetry() in direct mode', async () => {
@@ -309,7 +312,7 @@ describe('directMode tool filtering', () => {
       directMode: true,
     } as Parameters<typeof registry.execute>[2]
 
-    for (const name of ['delegate_to', 'db_query'] as const) {
+    for (const name of ['db_query'] as const) {
       const raw = await registry.execute(name, {}, directContext)
       expect(JSON.parse(raw) as { error?: string }, name).toHaveProperty(
         'error',
@@ -323,17 +326,18 @@ describe('directMode tool filtering', () => {
     }
 
     // Zero drift: without directMode the tools still reach their executors
-    // (delegate_to with an unknown target returns its specific INVALID_INPUT /
-    // unknown-target error envelope — NOT the direct-mode guard message).
+    // (db_query with a non-select statement returns its own error envelope —
+    // NOT the direct-mode guard message).
     const projectContext = {
       directoryHandle: null,
     } as unknown as Parameters<typeof registry.executeNoRetry>[2]
     const raw = await registry.executeNoRetry(
-      'delegate_to',
-      { target_agent_id: '', task: 'x' },
+      'db_query',
+      { sql: 'nonsense' },
       projectContext
     )
-    const parsed = JSON.parse(raw) as { error?: { code?: string } }
-    expect(parsed.error?.code).toBe('INVALID_INPUT')
+    const parsed = JSON.parse(raw) as { error?: { code?: string } | string }
+    expect(typeof parsed.error === 'string' ? parsed.error : parsed.error?.code).toBeTruthy()
+    expect(JSON.stringify(parsed)).not.toContain('standalone chat')
   })
 })

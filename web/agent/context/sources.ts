@@ -7,8 +7,21 @@ import { t } from '@creatorweave/i18n'
 import { useI18nStore } from '@/i18n/store'
 import type { InjectEnhancementsInput } from '@/agent/loop/enhancements'
 import { collectContextSources, type ContextEntries, type ContextObservation, type ContextSource } from './journal'
+import { isToolAllowedByClasses } from '@/agent/tools/tool-capabilities'
+import { teamMemberSlot } from '@/agent/team/team-paths'
 
 const scalar = (value: string | null | undefined): ContextEntries => value ? { value } : {}
+
+/**
+ * Whether this execution can actually use a tool.
+ *
+ * Sources that document a capability (bash commands, skills, external tools) must
+ * not be published to an execution whose capability boundary excludes that tool:
+ * a model told about channels it cannot open burns turns discovering the wall.
+ */
+function canUseTool(toolName: string, input: InjectEnhancementsInput): boolean {
+  return isToolAllowedByClasses(toolName, input.toolContext.capabilityClasses)
+}
 
 async function getProject(projectId?: string | null) {
   if (!projectId) return null
@@ -16,10 +29,21 @@ async function getProject(projectId?: string | null) {
 }
 
 async function resolveAgent(toolContext: { projectId?: string | null; currentAgentId?: string | null }) {
+  // An explicit `null` means "no persona at all" (anonymous execution). Only an
+  // absent/empty value falls back to the default agent, so callers can opt out
+  // of persona injection without losing the project lookup.
+  if (toolContext.currentAgentId === null) return null
+  if (!toolContext.projectId) return null
   const project = await getProject(toolContext.projectId)
-  if (!project) return null
-  const agent = await project.agentManager.getAgent(toolContext.currentAgentId?.trim() || 'default')
-    ?? await project.agentManager.getAgent('default')
+  // An unavailable project may reflect a storage failure, not an actor withdrawal.
+  if (!project) return undefined
+  const requested = toolContext.currentAgentId?.trim() || ''
+  const agent = requested
+    ? await project.agentManager.getAgent(requested, { strict: true })
+    : await project.agentManager.getAgent('default', { strict: true })
+  // Fail closed: a requested actor that no longer resolves degrades to
+  // "anonymous", never to a silent impersonation of the default agent.
+  if (requested && !agent) return null
   return { project, agent }
 }
 
@@ -27,7 +51,47 @@ async function resolveAgent(toolContext: { projectId?: string | null; currentAge
 export function createRuntimeContextSources(input: () => InjectEnhancementsInput): ContextSource[] {
   return [
     { id: 'mode', collect: () => scalar(getAgentModeEnhancement(input().mode)) },
+    { id: 'team-board', collect: () => {
+      const ctx = input().toolContext
+      const runKey = ctx.teamRunKey
+      // No active board = no section. Publishing a path that would be refused
+      // is worse than publishing nothing: the model spends turns hitting it.
+      if (!runKey) return undefined
+      const root = `vfs://team/${runKey}`
+      const canWrite = canUseTool('write', input())
+      const lines = [
+        '## Team Board',
+        '',
+        `This run has a shared scratch board at \`${root}/\`.`,
+        '',
+      ]
+      if (ctx.isSubagent) {
+        // Same slot rule as the ACL and the task section — never invent a name.
+        // (A made-up `by/anonymous/` here is how a member ended up being told a
+        // path it could not use while the ACL allowed a different one.)
+        const slot = teamMemberSlot({ actorId: ctx.currentAgentId, taskId: ctx.teamTaskId })
+        lines.push(
+          `- Read anything on it: \`${root}/00-brief.md\` (the goal, if the lead wrote one) and other members' notes under \`${root}/by/\`.`,
+          canWrite && slot
+            ? `- Answer in your final message — that is what the lead receives. Put long artifacts instead in \`${root}/${slot}/\`; everything else on the board is read-only. The board belongs to this conversation and is discarded with it, so anything the user must keep has to end up in the workspace.`
+            : canWrite
+              ? '- You have no write area on this board: return your findings in your final message.'
+              : '- You cannot write anything: this execution is read-only.',
+        )
+      } else {
+        lines.push(
+          '- A team belongs in **one** `run_code` call: `await Promise.all([agent(p1, { task_id: "t1" }), agent(p2, { task_id: "t2" })])`. Each `agent()` blocks until that member answers, so the script can branch on results, and the whole team renders as one card instead of a trail of steps.',
+          '- `spawn_subagent` is for a single fire-and-forget task; for a team, prefer the script above.',
+          canWrite
+            ? `- The board under \`${root}/\` maintains itself (task list, ledger, per-member directories). You do not write it — read it only to review what the team did. It belongs to this conversation (deleted with it, newest 20 kept), so anything that must outlive the conversation belongs in the workspace, not here.`
+            : '- You cannot write to it: this execution is read-only.',
+          '- If the members need one shared statement of the goal, put it in `00-brief.md` once; otherwise each task description is enough.',
+        )
+      }
+      return { value: lines.join('\n') }
+    } },
     { id: 'skills', collect: async () => {
+      if (!canUseTool('read_skill', input())) return undefined
       const { getSkillManager } = await import('@/skills/skill-manager')
       const manager = getSkillManager()
       if (!manager.initialized) return undefined
@@ -65,22 +129,42 @@ export function createRuntimeContextSources(input: () => InjectEnhancementsInput
       // Direct chats are project-independent: the hidden host binding must not
       // surface project agents (or any project-bound context) to the model.
       if (input().toolContext.directMode) return {}
+      // Subagents cannot spawn or delegate, so a peer roster is pure noise — and
+      // it is how the delegate_to instructions used to leak into them. Returning
+      // undefined keeps the source out of the message entirely; `{}` would publish
+      // an empty snapshot the model can still see.
+      if (input().toolContext.isSubagent) return undefined
       const project = await getProject(input().toolContext.projectId)
       if (!project) return {}
       const agents = await project.agentManager.listAgents()
-      return Object.fromEntries(agents.map(agent => [agent.id, `${agent.name}; delegate_to target_agent_id: ${agent.id}`]))
+      // `role` is what lets the model pick a teammate on purpose instead of by
+      // name alone. The spawn hint replaces the old delegate_to hint: delegation
+      // is a spawn with `as`, not a one-way hand-off.
+      return Object.fromEntries(agents.map(agent => [
+        agent.id,
+        agent.role
+          ? `${agent.name} — ${agent.role} → spawn_subagent(as: ${agent.id})`
+          : `${agent.name} → spawn_subagent(as: ${agent.id})`,
+      ]))
     } },
     { id: 'agent-persona', collect: async () => {
       if (input().toolContext.directMode) return {}
       const resolved = await resolveAgent(input().toolContext)
-      return resolved ? scalar(resolved.agent ? buildAgentPrompt(resolved.agent, { includeTodayLog: false }) : null) : {}
+      if (resolved === undefined) return undefined
+      // Authoritative absence must withdraw any previously published persona.
+      // Discovery failures still reject and are isolated by collectContextSources.
+      if (!resolved) return {}
+      return scalar(resolved.agent ? buildAgentPrompt(resolved.agent, { includeTodayLog: false }) : null)
     } },
     { id: 'today-log', collect: async () => {
       if (input().toolContext.directMode) return {}
       const resolved = await resolveAgent(input().toolContext)
-      return resolved ? scalar(resolved.agent ? await resolved.project.agentManager.readTodayLog(resolved.agent.id) : null) : {}
+      if (resolved === undefined) return undefined
+      if (!resolved) return {}
+      return scalar(resolved.agent ? await resolved.project.agentManager.readTodayLog(resolved.agent.id, { strict: true }) : null)
     } },
     { id: 'external-tools', collect: async () => {
+      if (!canUseTool('call_tool', input())) return undefined
       const { buildCompactExternalToolsSummary } = await import('@/agent/external-tool-bridge')
       return scalar(buildCompactExternalToolsSummary())
     } },
@@ -95,10 +179,13 @@ export function createRuntimeContextSources(input: () => InjectEnhancementsInput
       const { buildSidePanelWebMCPBlock } = await import('@/agent/external-tool-bridge')
       return scalar(buildSidePanelWebMCPBlock())
     } },
-    { id: 'bash-commands', collect: () => input().mode === 'act'
-      ? Object.fromEntries([...bashCommandRegistry.snapshot()].map(([name, command]) => [
-          name, `Description: ${command.manifest.description}\nManual:\n${command.manifest.manual}`,
-        ])) : {} },
+    { id: 'bash-commands', collect: () => {
+      // The manual only exists where the `bash` door does.
+      if (input().mode !== 'act' || !canUseTool('bash', input())) return undefined
+      return Object.fromEntries([...bashCommandRegistry.snapshot()].map(([name, command]) => [
+        name, `Description: ${command.manifest.description}\nManual:\n${command.manifest.manual}`,
+      ]))
+    } },
     { id: 'background-tasks', collect: async () => {
       const runtime = input().toolContext.subagentRuntime
       if (!runtime) return {}

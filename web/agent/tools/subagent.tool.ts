@@ -1,6 +1,7 @@
 import { toolErrorJson, toolOkJson } from './tool-envelope'
 import { SubagentError } from './tool-types'
 import type { ToolPromptDoc } from './tool-types'
+import type { TeamTaskHandoff } from '@/agent/team/team-manifest'
 import {
   validateAgentId,
   validateDescription,
@@ -12,7 +13,6 @@ import {
 import type { ToolDefinition, ToolExecutor } from './tool-types'
 
 const TOOL_NAME_SPAWN = 'spawn_subagent'
-const TOOL_NAME_BATCH_SPAWN = 'batch_spawn'
 const TOOL_NAME_SEND = 'send_message_to_subagent'
 const TOOL_NAME_STOP = 'stop_subagent'
 const TOOL_NAME_RESUME = 'resume_subagent'
@@ -21,7 +21,7 @@ const TOOL_NAME_GET_TRACE = 'get_subagent_trace'
 const TOOL_NAME_LIST = 'list_subagents'
 
 /**
- * Subagent type descriptions — injected into spawn_subagent / batch_spawn
+ * Subagent type descriptions — injected into spawn_subagent
  * tool description so the main agent knows when to use each type.
  *
  * Modelled after codex's role description injection (see codex-rs/core/src/agent/role.rs).
@@ -52,6 +52,29 @@ function runtimeMissing(tool: string): string {
     'SUBAGENT_RUNTIME_UNAVAILABLE',
     'Subagent runtime is not available in current tool context.'
   )
+}
+
+/**
+ * Normalize the optional `handoff` argument into the manifest shape.
+ * Unknown fields are dropped; empty strings collapse to undefined so the
+ * manifest never stores `expects: ""`.
+ */
+function parseHandoffArg(value: unknown): TeamTaskHandoff | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const source = value as Record<string, unknown>
+  const handoff: TeamTaskHandoff = {}
+  if (typeof source.expects === 'string' && source.expects.trim()) handoff.expects = source.expects.trim()
+  const reads = parseStringListArg(source.reads)
+  const writes = parseStringListArg(source.writes)
+  if (reads) handoff.reads = reads
+  if (writes) handoff.writes = writes
+  return Object.keys(handoff).length ? handoff : undefined
+}
+
+function parseStringListArg(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const items = value.filter((entry): entry is string => typeof entry === 'string').map(entry => entry.trim()).filter(Boolean)
+  return items.length ? items : undefined
 }
 
 /** Format a SubagentError (or fallback Error) into a tool envelope string. */
@@ -99,6 +122,39 @@ export const spawnSubagentDefinition: ToolDefinition = {
           enum: ['general-purpose', 'explorer', 'worker', 'awaiter'],
           description: 'Optional subagent role. Default: general-purpose. See tool description for guidance on when to use each type.',
         },
+        as: {
+          type: 'string',
+          description:
+            'Optional agent id to run as, so that agent\'s persona files apply. Omit entirely for an anonymous execution with no persona.',
+        },
+        role: {
+          type: 'string',
+          description:
+            'Optional one-line role statement for a temporary member. Reaches the model through the system prompt only; creates no agent and persists nothing.',
+        },
+        task_id: {
+          type: 'string',
+          description:
+            'Optional id of the team board task this spawn fulfils. Recorded in the run manifest; the child sees only its own task.',
+        },
+        handoff: {
+          type: 'object',
+          description:
+            'Optional handoff contract for that task: what you expect back, what it should read first, what it should produce.',
+          properties: {
+            expects: { type: 'string', description: 'One sentence describing the expected answer shape.' },
+            reads: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Board-relative paths the child should read before starting.',
+            },
+            writes: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Board-relative paths the child is expected to produce.',
+            },
+          },
+        },
       },
       required: ['description', 'prompt'],
     },
@@ -133,46 +189,6 @@ export const sendMessageToSubagentDefinition: ToolDefinition = {
         },
       },
       required: ['to', 'message'],
-    },
-  },
-}
-
-export const batchSpawnDefinition: ToolDefinition = {
-  type: 'function',
-  function: {
-    name: TOOL_NAME_BATCH_SPAWN,
-    description:
-      'Submit multiple independent background tasks. Returns accepted receipts and per-member rejections immediately. Completion arrives automatically as notifications in new parent turns. Continue independent work, or finish the current turn when nothing else remains.' +
-      SUBAGENT_TYPE_DESCRIPTIONS,
-    parameters: {
-      type: 'object',
-      properties: {
-        tasks: {
-          type: 'array',
-          items: {
-            type: 'object',
-            properties: {
-              description: { type: 'string' },
-              prompt: { type: 'string' },
-              name: { type: 'string' },
-              mode: { type: 'string', enum: ['plan', 'act'] },
-              subagent_type: {
-                type: 'string',
-                enum: ['general-purpose', 'explorer', 'worker', 'awaiter'],
-                description: 'Optional subagent role. See spawn_subagent description.',
-              },
-            },
-            required: ['description', 'prompt'],
-          },
-          description: 'Subagent tasks to launch.',
-        },
-        max_concurrency: {
-          type: 'number',
-          maximum: 5,
-          description: 'Max parallel tasks per batch (default 5, max 5).',
-        },
-      },
-      required: ['tasks'],
     },
   },
 }
@@ -316,45 +332,16 @@ export const spawnSubagentExecutor: ToolExecutor = async (args, context) => {
       name,
       mode: args.mode === 'plan' || args.mode === 'act' ? args.mode : undefined,
       subagent_type: subagentType,
+      as: typeof args.as === 'string' && args.as.trim() ? args.as.trim() : undefined,
+      role: typeof args.role === 'string' && args.role.trim() ? args.role.trim() : undefined,
+      task_id: typeof args.task_id === 'string' && args.task_id.trim() ? args.task_id.trim() : undefined,
+      handoff: parseHandoffArg(args.handoff),
       parentToolCallId: context.currentToolCallId,
     })
 
     return toolOkJson(TOOL_NAME_SPAWN, result)
   } catch (error) {
     return formatError(TOOL_NAME_SPAWN, error)
-  }
-}
-
-export const batchSpawnExecutor: ToolExecutor = async (args, context) => {
-  const runtime = context.subagentRuntime
-  if (!runtime) return runtimeMissing(TOOL_NAME_BATCH_SPAWN)
-
-  try {
-    const tasks: Array<import('./tool-types').SpawnSubagentInput> = []
-    const indices: number[] = []
-    const rejected: import('@/agent/subagent/async-types').SubagentBatchAcceptance['rejected'] = []
-    for (const [task_index, raw] of (Array.isArray(args.tasks) ? args.tasks : []).entries()) {
-      try {
-        const task = raw as Record<string, unknown>
-        tasks.push({ description: validateDescription(task.description), prompt: validatePrompt(task.prompt),
-          name: validateName(task.name), subagent_type: validateSubagentType(task.subagent_type),
-          mode: task.mode === 'plan' || task.mode === 'act' ? task.mode : undefined,
-          parentToolCallId: context.currentToolCallId })
-        indices.push(task_index)
-      } catch (error) {
-        rejected.push({ task_index, reason: error instanceof Error ? error.message : String(error),
-          error_code: error instanceof SubagentError ? error.code : 'INVALID_INPUT' })
-      }
-    }
-    const result = await runtime.batchStart({ tasks,
-      max_concurrency: typeof args.max_concurrency === 'number' ? args.max_concurrency : undefined })
-    return toolOkJson(TOOL_NAME_BATCH_SPAWN, {
-      accepted: result.accepted.map((item) => ({ ...item, task_index: indices[item.task_index] })),
-      rejected: [...rejected, ...result.rejected.map((item) => ({ ...item, task_index: indices[item.task_index] }))]
-        .sort((a, b) => a.task_index - b.task_index),
-    })
-  } catch (error) {
-    return formatError(TOOL_NAME_BATCH_SPAWN, error)
   }
 }
 
@@ -469,7 +456,8 @@ export const subagentPromptDoc: ToolPromptDoc = {
   section: '### Subagent Delegation',
   lines: [
     '- `spawn_subagent(description, prompt, ...)` - Submit a background child task; receipt means accepted, not finished',
-    '- `batch_spawn(tasks, max_concurrency?)` - Submit independent children with per-member acceptance/rejection',
+    '- Optional `as: <agentId>` runs the child as that agent (its persona applies). Omit it for an anonymous execution with no persona; use `role` for a one-line temporary role.',
+    '- On a team board run, pass `task_id` + `handoff: { expects, reads, writes }` so the task is recorded in `manifest.json` and the child reads its own task instead of your prompt telling it twice.',
     '- Completion results arrive automatically as notifications in new parent turns; do not poll to keep the current turn alive',
     '- `send_message_to_subagent(to, message)` - Send follow-up instruction to a running/pending child',
     '- `stop_subagent(agentId)` - Stop a child task when scope changes',

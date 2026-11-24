@@ -5,6 +5,8 @@ class SchemaDatabase {
   statements: string[] = []
   /** When true, simulated ALTER TABLE repairs never register the column. */
   blockFsOpsRepair = false
+  /** When true the version read fails, as it can on a busy handle. */
+  blockVersionRead = false
   /** When true, simulated kind ALTER TABLE never registers the column. */
   blockKindRepair = false
   private missingConversationColumns: Set<string>
@@ -25,9 +27,10 @@ class SchemaDatabase {
     this.missingKindColumn = missingKindColumn
   }
 
-  exec(sql: string): Array<{ values: number[][] }> {
+  exec(sql: string, options?: { returnValue?: string }): number[][] | this {
     if (sql.trim() === 'PRAGMA user_version') {
-      return [{ values: [[this.userVersion]] }]
+      if (this.blockVersionRead) throw new Error('database is locked')
+      return options?.returnValue === 'resultRows' ? [[this.userVersion]] : this
     }
 
     const selectedColumns = [...sql.matchAll(/compressed_context_\w+/g)].map((match) => match[0])
@@ -291,5 +294,17 @@ describe('initializeSchema', () => {
     expect(db.userVersion).toBe(LATEST_SCHEMA_VERSION)
     expect(db.statements.filter((sql) => sql === 'PRAGMA user_version = 17')).toHaveLength(0)
     expect(db.statements.filter((sql) => sql === 'PRAGMA user_version = 18')).toHaveLength(0)
+  })
+})
+
+describe('unreadable user_version', () => {
+  it('stops initialization before changing the database when the version cannot be read', async () => {
+    const db = new SchemaDatabase(LATEST_SCHEMA_VERSION)
+    db.blockVersionRead = true
+
+    await expect(initializeSchema(db)).rejects.toThrow('database is locked')
+
+    expect(db.userVersion).toBe(LATEST_SCHEMA_VERSION)
+    expect(db.statements).toEqual([])
   })
 })

@@ -137,8 +137,6 @@ export const settings = {
     // Experimental features
     experimentalWarning: "이 기능들은 실험 단계입니다",
     experimentalWarningDesc: "활성화하면 안정성 문제가 발생할 수 있습니다. 일부 기능은 제공업체의 동시 처리 능력에 따라 달라집니다.",
-    batchSpawn: "병렬 서브에이전트 (batch_spawn)",
-    batchSpawnDesc: "AI가 여러 하위 작업을 병렬로 시작할 수 있도록 허용합니다. 높은 동시성을 지원하는 제공업체가 필요하며, 그렇지 않으면 속도 제한 오류가 발생할 수 있습니다.",
 
 
     // Sync panel
@@ -550,10 +548,6 @@ export const settings = {
       availableCredit: "사용 가능 크레딧",
       monthly: "월간 패키지",
       topup: "크레딧 패키지 {count}",
-      resetUnknown: "리셋 시간 알 수 없음",
-      resetSoon: "곧 리셋",
-      resetInHours: "{count}시간 후 리셋",
-      resetInDays: "{count}일 후 리셋",
       expireUnknown: "만료 시간 알 수 없음",
       expireSoon: "곧 만료",
       expireInHours: "{count}시간 후 만료",

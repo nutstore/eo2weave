@@ -13,6 +13,8 @@ export interface ToolRenderCtx {
   toolCallId?: string
   /** Owning conversation, for renderers that drill into per-agent detail. */
   conversationId?: string
+  /** Layout depth, so a transcript nested in a transcript stops deepening. */
+  depth?: number
   /** Parsed arguments (may be partial during streaming) */
   args: Record<string, unknown>
   /** Raw args string (for copy / fallback) */

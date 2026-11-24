@@ -99,6 +99,39 @@ function completion(): SubagentCompletion {
 }
 
 describe('durable subagent completions', () => {
+  it.each([{ classes: ['read'] as Array<'read'> }, { classes: [] }])(
+    'preserves capability boundary $classes in task metadata after completion and acknowledgement',
+    async ({ classes }) => {
+      const tasks = new SubagentRepository()
+      const outbox = new SubagentCompletionRepository()
+      const restricted = task()
+      restricted.execution!.capabilityClasses = classes
+      await tasks.saveBatch('c1', [restricted])
+      await outbox.finishExecution({ task: restricted, completion: completion() })
+      await tasks.acknowledge('c1', 'a1', 'e1')
+      expect((await tasks.findMetadataByWorkspaceId('c1'))[0].execution).toMatchObject({
+        capabilityClasses: classes,
+        acknowledged: true,
+      })
+    },
+  )
+
+  it('reads completion metadata without materializing its transcript and preserves the full snapshot', async () => {
+    const tasks = new SubagentRepository()
+    const outbox = new SubagentCompletionRepository()
+    await tasks.saveBatch('c1', [task()])
+    await outbox.finishExecution({ task: task(), completion: completion() })
+    expect((await outbox.listRecoverable('c1'))[0].messages).toHaveLength(0)
+    const reserved = await outbox.reserveDelivery(['a1:e1'], 'group-message')
+    expect(reserved[0].messages).toHaveLength(0)
+    await outbox.markDelivered('a1:e1')
+    expect(await outbox.findMetadata('a1:e1')).toMatchObject({
+      id: 'a1:e1', status: 'delivered', result: 'full result', messages: [],
+    })
+    await outbox.claim('a1:e1', 'parent-run')
+    expect((await outbox.listProcessing('c1'))[0].messages).toHaveLength(0)
+    expect((await outbox.find('a1:e1'))?.messages).toEqual(task().messages)
+  })
   it('blocks only a still-delivered receipt when recovering an unclaimed dispatch', async () => {
     const outbox = new SubagentCompletionRepository()
     await new SubagentRepository().saveBatch('c1', [task()])
@@ -153,7 +186,7 @@ describe('durable subagent completions', () => {
       messages: task().messages,
       execution: task().execution,
     })
-    expect(await outbox.listRecoverable('c1')).toEqual([completion()])
+    expect(await outbox.listRecoverable('c1')).toEqual([{ ...completion(), messages: [] }])
   })
 
   it('does not regress a later attempt or delivery phase when finish is retried', async () => {

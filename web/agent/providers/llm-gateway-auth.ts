@@ -79,9 +79,10 @@ export interface CreditPackage {
   /** Remaining percentage (0-100) */
   remaining_percentage: number
   /**
-   * ISO 8601 timestamp with timezone. For monthly packages this is the next
-   * reset date (calendar month); for top-up packs this is the expiry date.
-   * May be null when the gateway omits it.
+   * ISO 8601 timestamp with timezone — the end of this package's usage
+   * window. It is ALWAYS an expiry, never a "reset": neither the monthly
+   * plan nor a top-up pack is replenished when it passes. May be null when
+   * the gateway omits it.
    */
   expires_at: string | null
   /** e.g. "active" */
@@ -90,7 +91,7 @@ export interface CreditPackage {
 
 /** Credit usage breakdown of `GET /v1/rate-limits`. */
 export interface CreditUsage {
-  /** This month's plan (refreshes every calendar month); null when there is no monthly plan */
+  /** The plan/membership package (a per-period quota that ends at `expires_at`); null when there is no monthly plan */
   monthly: CreditPackage | null
   /** Purchased credit top-up packs */
   topup_packages: CreditPackage[]

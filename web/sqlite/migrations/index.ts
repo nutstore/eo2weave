@@ -74,21 +74,19 @@ function repairConversationCompressionColumns(db: any): void {
 }
 
 /**
- * Synchronous read of PRAGMA user_version (the async getCurrentVersion helper
- * is unavailable inside the synchronous repair functions).
+ * Read PRAGMA user_version synchronously for both migrations and startup repairs.
+ * sqlite-wasm returns the DB handle unless result rows are explicitly requested.
  */
 function readUserVersion(db: any): number {
-  try {
-    const result = db.exec('PRAGMA user_version')
-    const versionFromValues = result?.[0]?.values?.[0]?.[0]
-    if (typeof versionFromValues === 'number') return versionFromValues
-
-    const versionFromArray = result?.[0]?.[0]
-    if (typeof versionFromArray === 'number') return versionFromArray
-  } catch {
-    // Treat unreadable version as 0 so repair functions still raise the floor.
+  const rows = db.exec('PRAGMA user_version', {
+    returnValue: 'resultRows',
+    rowMode: 'array',
+  })
+  const version = rows?.[0]?.[0]
+  if (typeof version !== 'number') {
+    throw new Error('Unable to read SQLite user_version')
   }
-  return 0
+  return version
 }
 
 /**
@@ -101,7 +99,8 @@ function readUserVersion(db: any): number {
  * "duplicate column name" conflict on every startup.
  */
 function bumpUserVersionFloor(db: any, version: number): void {
-  if (readUserVersion(db) < version) {
+  const current = readUserVersion(db)
+  if (current < version) {
     db.exec(`PRAGMA user_version = ${version}`)
   }
 }
@@ -291,6 +290,22 @@ function repairSubagentExecutions(db: any): void {
   }
   db.exec(subagentCompletionsSQL)
   bumpUserVersionFloor(db, 22)
+}
+
+/**
+ * Ensure subagent_tasks carries the execution identity.
+ *
+ * Hydration reads only metadata, so a member restored after a reload rebuilds
+ * its loop from the row: without these columns it resumes anonymous (no
+ * persona) and its outcome never reaches the team board it was spawned on.
+ */
+function repairSubagentIdentityColumns(db: any): void {
+  for (const column of ['actor_id', 'role', 'team_task_id', 'team_run_key']) {
+    if (!subagentTasksColumnExists(db, column)) {
+      db.exec(`ALTER TABLE subagent_tasks ADD COLUMN ${column} TEXT`)
+    }
+  }
+  bumpUserVersionFloor(db, 26)
 }
 
 /**
@@ -610,6 +625,30 @@ export const migrations: Migration[] = [
   { version: 22, name: 'add_async_subagent_executions', up: repairSubagentExecutions },
   { version: 23, name: 'add_workflow_script_tables', up: (db) => repairWorkflowScriptTables(db, 23) },
   { version: 24, name: 'add_workflow_step_identity_columns', up: (db) => repairWorkflowScriptTables(db, 24) },
+  {
+    version: 25,
+    name: 'strip_context_commit_envelopes',
+    // 321 commits across one install carried envelopes averaging 90.6 KB — about
+    // 29 MB of text, roughly 70% of what those rows stored, re-written on every turn
+    // that changed any source. Only equality was ever needed, and the runtime now
+    // keeps a 16-char digest, so the stored text can go. Rows compacted here keep no
+    // digest, which costs each conversation one rebased epoch (one snapshot, then
+    // deltas again); a conversation whose latest commit already has a digest does
+    // not rebase at all.
+    up: `
+      UPDATE messages
+         SET meta_json = json_remove(meta_json, '$.contextCommit.envelope')
+       WHERE json_valid(meta_json)
+         AND json_extract(meta_json, '$.contextCommit.envelope') IS NOT NULL;
+
+      PRAGMA user_version = 25;
+    `,
+  },
+  {
+    version: 26,
+    name: 'add_subagent_team_identity',
+    up: repairSubagentIdentityColumns,
+  },
 ]
 
 /** Highest migration in the registry — where an up-to-date database ends. */
@@ -623,32 +662,7 @@ export const LATEST_SCHEMA_VERSION = migrations.at(-1)?.version ?? BASE_SCHEMA_V
  * Get current database version from PRAGMA user_version
  */
 export async function getCurrentVersion(db: any): Promise<number> {
-  try {
-    const result = db.exec('PRAGMA user_version')
-    // sqlite-wasm result shape may vary by build:
-    // - [{ columns, values }]
-    // - [[version]]
-    const versionFromValues = result?.[0]?.values?.[0]?.[0]
-    if (typeof versionFromValues === 'number') return versionFromValues
-
-    const versionFromArray = result?.[0]?.[0]
-    if (typeof versionFromArray === 'number') return versionFromArray
-
-    // Fallback: use prepared statement API.
-    const stmt = db.prepare('PRAGMA user_version')
-    try {
-      if (stmt.step()) {
-        const row = stmt.get({}) as { user_version?: number }
-        if (typeof row?.user_version === 'number') return row.user_version
-      }
-    } finally {
-      stmt.finalize()
-    }
-
-    return 0
-  } catch {
-    return 0
-  }
+  return readUserVersion(db)
 }
 
 /**
@@ -795,6 +809,11 @@ export async function initializeSchema(
   // v21 managed MCP task tables and mcp_servers.protocol_mode.
   repairManagedMcpTasks(db)
   repairSubagentExecutions(db)
+
+  // v26 subagent_tasks execution identity. Same reasoning: the columns carry a
+  // member's persona and board task, and a database that reports v26 without
+  // them would silently resume every member anonymously.
+  repairSubagentIdentityColumns(db)
 
   // v23 workflow_agent_steps. Same reasoning as above: the table is created by
   // DDL that can race the user_version bump, and a missing table would surface

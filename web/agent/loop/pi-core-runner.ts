@@ -1,4 +1,4 @@
-import { reconcileContext, type ContextObservation } from '@/agent/context/journal'
+import { reconcileContext, requestEnvelope, type ContextObservation } from '@/agent/context/journal'
 import { bashCommandRegistry } from '@/agent/bash-commands/registry'
 import type { StreamFn } from '@earendil-works/pi-agent-core'
 import { streamSimple as piAiStreamSimple } from '@earendil-works/pi-ai'
@@ -392,9 +392,8 @@ export async function executePiCoreLoop(
         const history = messageState.allMessages
         const summaryIndex = history.map(message => message.kind).lastIndexOf('context_summary')
         const contextIndex = history.map(message => message.kind).lastIndexOf('context_update')
-        const envelope = JSON.stringify({
-          version: 1, provider: model.provider, model: model.id, api: model.api, baseUrl: model.baseUrl,
-          system: context.systemPrompt,
+        const envelope = requestEnvelope({
+          provider: model.provider, model: model.id, api: model.api, baseUrl: model.baseUrl,
           tools: agentTools.map(({ name, description, parameters }) => ({ name, description, parameters })),
         })
         let pendingSummary: Message | undefined

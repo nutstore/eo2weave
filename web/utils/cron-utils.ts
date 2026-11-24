@@ -236,7 +236,7 @@ export function getNextRunTime(expression: string, after: number = Date.now()): 
     // Hour
     if (!fieldMatches(hour, current.getHours(), 0, 23)) {
       // Find next matching hour
-      let nextHour = findNextMatch(current.getHours() + 1, 0, 23, hour)
+      const nextHour = findNextMatch(current.getHours() + 1, 0, 23, hour)
       if (nextHour === null) {
         current.setDate(current.getDate() + 1)
         current.setHours(0, 0, 0, 0)
@@ -248,7 +248,7 @@ export function getNextRunTime(expression: string, after: number = Date.now()): 
 
     // Minute
     if (!fieldMatches(minute, current.getMinutes(), 0, 59)) {
-      let nextMinute = findNextMatch(current.getMinutes() + 1, 0, 59, minute)
+      const nextMinute = findNextMatch(current.getMinutes() + 1, 0, 59, minute)
       if (nextMinute === null) {
         current.setHours(current.getHours() + 1, 0, 0, 0)
         continue

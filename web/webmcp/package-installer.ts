@@ -630,10 +630,13 @@ async function swapPackageIntoPlace(
               await copyTree(provider, backup, id)
             } catch (restoreError) {
               // The restore failed — same rule as the rename path: keep
-              // the backup (it is the last good copy) and say so.
+              // the backup (it is the last good copy) and say so, including
+              // why the restore itself failed.
               backupPreserved = true
+              const restoreReason =
+                restoreError instanceof Error ? restoreError.message : String(restoreError)
               throw new PackageInstallError(
-                `Failed to write package ${id} to storage AND the previous install could not be restored; its backup was preserved at ${backup}`,
+                `Failed to write package ${id} to storage AND the previous install could not be restored (restore failed: ${restoreReason}); its backup was preserved at ${backup}`,
                 'STORAGE_FAILED',
               )
             }

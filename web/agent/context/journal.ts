@@ -1,4 +1,7 @@
 import { generateId, type Message } from '@/agent/message-types'
+import { envelopeDigest } from '@/agent/context/envelope-digest'
+
+export { envelopeDigest }
 
 /** Model-visible entries. A scalar source uses a single stable key (e.g. "value"). */
 export type ContextEntries = Record<string, string>
@@ -27,12 +30,49 @@ export interface ContextCommit {
   version: 1
   epoch: string
   sequence: number
-  envelope: string
+  /**
+   * Digest of the request envelope, NOT the envelope itself.
+   *
+   * Every commit used to carry the full envelope: the provider/model/tool list plus
+   * the whole system prompt. That was ~90 KB of identical text written on every
+   * turn that changed any source, and it dwarfed the change it described (a 845-byte
+   * team-board delta sat next to a 90,670-byte envelope). Only equality is ever
+   * needed, so a digest carries the same meaning at a few bytes.
+   */
+  envelopeDigest: string
   changes: ContextChange[]
 }
 
 export function canonicalEntries(entries: ContextEntries): ContextEntries {
   return Object.fromEntries(Object.keys(entries).sort().map(key => [key, entries[key]]))
+}
+
+/**
+ * Identity of the request a journal's deltas apply to.
+ *
+ * Deliberately has no system-prompt input: sources are collected independently of
+ * the prompt, so editing it does not invalidate the journal. Taking the prompt as
+ * an ingredient here made every turn that touched a dynamic prompt section start a
+ * new epoch, and a new epoch re-publishes a full snapshot of every source (the
+ * memory files, the day log, the skill list) instead of a delta.
+ */
+export interface RequestEnvelopeInput {
+  provider: string
+  model: string
+  api?: string | null
+  baseUrl?: string | null
+  tools: readonly { name: string; description?: string; parameters?: unknown }[]
+}
+
+export function requestEnvelope(input: RequestEnvelopeInput): string {
+  return JSON.stringify({
+    version: 1,
+    provider: input.provider,
+    model: input.model,
+    api: input.api ?? null,
+    baseUrl: input.baseUrl ?? null,
+    tools: input.tools,
+  })
 }
 
 /** Sources fail independently. A failed collector cannot withdraw previously published state. */
@@ -100,7 +140,8 @@ export function reconcileContext(
   // A broken baseline means history was trimmed; re-publish full snapshots in a new epoch.
   if (broken.size > 0) reset = true
   const last = [...history].reverse().find(message => message.contextCommit)?.contextCommit
-  const newEpoch = reset || !last || last.envelope !== envelope
+  const digest = envelopeDigest(envelope)
+  const newEpoch = reset || !last || last.envelopeDigest !== digest
   const current = new Map(observations.map(observation => [observation.sourceId, canonicalEntries(observation.entries)]))
   // Rebase known state even if its collector is temporarily unavailable after compaction.
   if (newEpoch) for (const [id, state] of states) if (!current.has(id)) current.set(id, state.entries)
@@ -127,7 +168,7 @@ export function reconcileContext(
   if (!newEpoch && changes.length === 0) return
   const commit: ContextCommit = {
     version: 1, epoch: newEpoch ? generateId() : last!.epoch,
-    sequence: (last?.sequence ?? 0) + 1, envelope, changes,
+    sequence: (last?.sequence ?? 0) + 1, envelopeDigest: digest, changes,
   }
   const updates = changes.map(({ sourceId, revision, baseRevision, snapshot, added, updated, removed }) =>
     ({ sourceId, revision, baseRevision, ...(snapshot !== undefined ? { snapshot } : { added, updated, removed }) }))

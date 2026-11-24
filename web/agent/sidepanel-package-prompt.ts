@@ -288,7 +288,7 @@ export async function getPendingPackagePrompt(): Promise<
   const { getSidePanelBindingId } = await import('@/agent/workspace-assistant-context')
   const binding = getSidePanelBindingId()
   if (!binding) {
-    // eslint-disable-next-line no-console
+
     console.info('[SidePanelPackagePrompt] skip: no side-panel binding (not side-panel mode)')
     return null
   }
@@ -359,7 +359,7 @@ export async function getPendingPackagePrompt(): Promise<
   if (!agentWeb?.recipeCheckStatus) {
     if (protocolSupport === null) {
       protocolSupport = 'none'
-      // eslint-disable-next-line no-console
+
       console.info(
         '[SidePanelPackagePrompt] skip: extension bridge unavailable (no opt-in protocol; plain web or pre-1.1.7 extension)',
       )
@@ -426,7 +426,7 @@ async function probeNewProtocol(
     if (relayRejectedType || timedOut || status === null) {
       return { verdict: 'legacy', result: { applicable: false, retryable: true } }
     }
-    // eslint-disable-next-line no-console
+
     console.warn('[SidePanelPackagePrompt] skip: bridge returned failure', {
       status,
       hint: 'UNAUTHORIZED_TARGET = binding/trusted-origin check failed in background',
@@ -444,12 +444,12 @@ async function probeNewProtocol(
     }
   }
   if (!status.applicable || !status.package || typeof status.package.id !== 'string') {
-    // eslint-disable-next-line no-console
+
     console.info('[SidePanelPackagePrompt] skip: no package matches bound tab URL', { status })
     return { verdict: 'done', result: null }
   }
   if (status.enabled || status.package.activation === 'enabled') {
-    // eslint-disable-next-line no-console
+
     console.info('[SidePanelPackagePrompt] skip: package already enabled', status.package.id)
     return { verdict: 'done', result: null }
   }
@@ -464,7 +464,7 @@ async function probeNewProtocol(
   for (const alternative of alternatives) {
     if (!alternative || typeof alternative.id !== 'string') continue
     if (isPackagePromptDismissed(alternative.id)) continue
-    // eslint-disable-next-line no-console
+
     console.info('[SidePanelPackagePrompt] best candidate dismissed; offering sibling', alternative.id)
     return {
       verdict: 'done',
@@ -489,7 +489,7 @@ async function probeNewProtocol(
       },
     }
   }
-  // eslint-disable-next-line no-console
+
   console.info('[SidePanelPackagePrompt] skip: within dismissal cooldown', status.package.id)
   return { verdict: 'done', result: null }
 }
@@ -536,7 +536,7 @@ async function probeLegacyProtocol(
     return { applicable: false, retryable: true }
   }
   if (!status || status.ok === false) {
-    // eslint-disable-next-line no-console
+
     console.warn('[SidePanelPackagePrompt] skip: legacy bridge returned failure/timeout', { status })
     // A legacy timeout (null) or a transient background error is NOT a
     // definitive "nothing to offer" answer: returning null here would let
@@ -550,21 +550,21 @@ async function probeLegacyProtocol(
   }
   const recipe = status.recipe
   if (!status.applicable || !recipe || typeof recipe.id !== 'string') {
-    // eslint-disable-next-line no-console
+
     console.info('[SidePanelPackagePrompt] skip: no legacy recipe matches bound tab URL', { status })
     return null
   }
   if (status.enabled) {
-    // eslint-disable-next-line no-console
+
     console.info('[SidePanelPackagePrompt] skip: legacy recipe already enabled', recipe.id)
     return null
   }
   if (isPackagePromptDismissed(recipe.id)) {
-    // eslint-disable-next-line no-console
+
     console.info('[SidePanelPackagePrompt] skip: within dismissal cooldown (legacy)', recipe.id)
     return null
   }
-  // eslint-disable-next-line no-console
+
   console.info('[SidePanelPackagePrompt] showing opt-in modal from legacy probe for', recipe.id)
   return {
     applicable: true,
@@ -697,7 +697,7 @@ export async function enablePackageAndReload(
           winner = 'bridge'
           clearTimeout(timer)
           // Unexpected bridge failures must keep their cause for diagnosis.
-          // eslint-disable-next-line no-console
+
           console.error('[SidePanelPackagePrompt] enable bridge call failed:', err, {
             packageId,
             binding,
@@ -713,7 +713,7 @@ export async function enablePackageAndReload(
   } catch (err: unknown) {
     // Unreachable in practice (the promise never rejects) but kept as a
     // belt-and-braces guard so the flow can never throw into the modal.
-    // eslint-disable-next-line no-console
+
     console.error('[SidePanelPackagePrompt] enable flow crashed:', err, { packageId })
     return {
       ok: false,
@@ -761,7 +761,7 @@ export async function enableLegacyRecipeAndReload(
   const key = `${binding}:${recipeId}`
   const existing = pendingLegacyEnables.get(key)
   if (existing) {
-    // eslint-disable-next-line no-console
+
     console.info('[SidePanelPackagePrompt] legacy enable already in flight; awaiting it', { recipeId })
     const raced = await Promise.race([
       existing,
@@ -791,7 +791,7 @@ export async function enableLegacyRecipeAndReload(
         reloaded: raw?.reloaded,
       }),
       (err: unknown) => {
-        // eslint-disable-next-line no-console
+
         console.error('[SidePanelPackagePrompt] legacy enable bridge call failed:', err, { recipeId })
         return {
           ok: false,
@@ -801,7 +801,7 @@ export async function enableLegacyRecipeAndReload(
       },
     )
   } catch (err: unknown) {
-    // eslint-disable-next-line no-console
+
     console.error('[SidePanelPackagePrompt] legacy enable bridge threw synchronously:', err, { recipeId })
     return {
       ok: false,

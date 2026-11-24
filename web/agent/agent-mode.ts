@@ -59,7 +59,6 @@ export const TOOL_MODE_CLASSIFICATION: Map<string, ToolModeMetadata> = new Map([
   ['search_skills', { name: 'search_skills', category: 'read' }],
   // Meta tools (read-only — no file modifications)
   ['ask_user_question', { name: 'ask_user_question', category: 'read' }],
-  ['delegate_to', { name: 'delegate_to', category: 'read' }],
   // Subagent orchestration tools (read-only orchestration surface)
   ['read_conversation_history', { name: 'read_conversation_history', category: 'read' }],
   ['search_conversations', { name: 'search_conversations', category: 'read' }],
@@ -89,7 +88,6 @@ export const TOOL_MODE_CLASSIFICATION: Map<string, ToolModeMetadata> = new Map([
   ['page_synthesize_locators', { name: 'page_synthesize_locators', category: 'read' }],
   ['page_screenshot', { name: 'page_screenshot', category: 'read' }],
   ['spawn_subagent', { name: 'spawn_subagent', category: 'read' }],
-  ['batch_spawn', { name: 'batch_spawn', category: 'read' }],
   ['send_message_to_subagent', { name: 'send_message_to_subagent', category: 'read' }],
   ['stop_subagent', { name: 'stop_subagent', category: 'read' }],
   ['resume_subagent', { name: 'resume_subagent', category: 'read' }],

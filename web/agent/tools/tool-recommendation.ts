@@ -229,27 +229,16 @@ const TOOL_METADATA: Record<
     description: 'Submit independent background subtasks and return accepted receipts',
     baseExample: 'spawn_subagent(description="Audit API handlers", prompt="Find all TODOs in api/** and summarize risk by file")',
   },
-  batch_spawn: {
-    name: 'batch_spawn',
-    displayName: 'Batch Subagent Delegation',
-    category: 'batch',
-    intents: ['batch-operations', 'refactoring', 'documentation'],
-    description: 'Submit background tasks with independent acceptance and rejection',
-    baseExample:
-      'batch_spawn(tasks=[{description:"Scan api",prompt:"..."},{description:"Scan ui",prompt:"..."}], max_concurrency=2)',
-  },
 }
 
-/** Get TOOL_METADATA filtered by enabled features (e.g. batch_spawn) */
+/**
+ * Tool metadata for recommendation.
+ *
+ * `batch_spawn` used to be filtered out unless an experimental flag was on. The
+ * tool is gone: parallel work is a `run_code` script calling `agent()` N times,
+ * which has one entry point, one cost model and replay support.
+ */
 function getToolMetadata() {
-  const entries = Object.entries(TOOL_METADATA)
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports -- synchronous helper behind sync methods (recommend/getAllTools); dynamic import would change the public API; failure already falls back to full metadata
-    const { useSettingsStore } = require('@/store/settings.store')
-    if (!useSettingsStore.getState().enableBatchSpawn) {
-      return Object.fromEntries(entries.filter(([k]) => k !== 'batch_spawn'))
-    }
-  } catch { /* fallback: return all */ }
   return TOOL_METADATA
 }
 

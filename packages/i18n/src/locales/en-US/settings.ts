@@ -136,8 +136,6 @@ export const settings = {
     // Experimental features
     experimentalWarning: "These features are experimental",
     experimentalWarningDesc: "Enabling them may cause stability issues. Some features depend on your provider's concurrency capacity.",
-    batchSpawn: "Parallel Subagents (batch_spawn)",
-    batchSpawnDesc: "Allow AI to launch multiple subtasks in parallel. Requires provider support for high concurrency, otherwise rate limit errors may occur.",
 
 
     // Sync panel
@@ -556,10 +554,6 @@ export const settings = {
       availableCredit: "Available credits",
       monthly: "Monthly quota",
       topup: "Credit pack {count}",
-      resetUnknown: "Reset time unknown",
-      resetSoon: "Resets soon",
-      resetInHours: "Resets in {count}h",
-      resetInDays: "Resets in {count}d",
       expireUnknown: "Expiry time unknown",
       expireSoon: "Expires soon",
       expireInHours: "Expires in {count}h",
