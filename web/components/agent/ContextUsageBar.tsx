@@ -39,8 +39,15 @@ export function ContextUsageBar({
     }
   }
 
+  /**
+   * Compact token count for the composer footer: 99600 → "99.6K", 1000000 → "1.0M".
+   *
+   * The M step matters: a 1M-context model rendered as "1000.0k" looks like a
+   * broken number. Units match the turn footer / usage bar formatters (K, M).
+   */
   const formatTokenCompact = (value: number): string => {
-    if (value >= 1000) return `${(value / 1000).toFixed(1)}k`
+    if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`
+    if (value >= 1000) return `${(value / 1000).toFixed(1)}K`
     return `${value}`
   }
 

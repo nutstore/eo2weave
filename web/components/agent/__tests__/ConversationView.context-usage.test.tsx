@@ -222,7 +222,7 @@ describe('ConversationView context usage source', () => {
     render(<ConversationView />)
 
     expect(
-      screen.getByText((_, element) => element?.textContent === '190/200.0k')
+      screen.getByText((_, element) => element?.textContent === '190/200.0K')
     ).toBeInTheDocument()
     expect(screen.queryByText('832')).not.toBeInTheDocument()
   })
@@ -242,8 +242,8 @@ describe('ConversationView context usage source', () => {
 
     render(<ConversationView />)
 
-    expect(screen.queryByText((_, element) => element?.textContent === '832/200.0k')).not.toBeInTheDocument()
-    expect(screen.queryByText((_, element) => element?.textContent === '27/200.0k')).not.toBeInTheDocument()
+    expect(screen.queryByText((_, element) => element?.textContent === '832/200.0K')).not.toBeInTheDocument()
+    expect(screen.queryByText((_, element) => element?.textContent === '27/200.0K')).not.toBeInTheDocument()
   })
 
   it('includes cache read tokens in settled assistant usage', () => {
@@ -281,7 +281,7 @@ describe('ConversationView context usage source', () => {
     render(<ConversationView />)
 
     expect(
-      screen.getByText((_, element) => element?.textContent === '230/200.0k')
+      screen.getByText((_, element) => element?.textContent === '230/200.0K')
     ).toBeInTheDocument()
   })
 })
