@@ -155,7 +155,7 @@ jobs:
         with:
           files: dist/*
           fail_on_unmatched_files: true
-          body_path: /tmp/release-notes.md
+          body_path: ${{ steps.notes.outputs.body_path }}
           # When CHANGELOG has no section for the tag (e.g. manual tag without
           # `pnpm release`), fall back to GitHub's auto-generated notes.
           generate_release_notes: true
