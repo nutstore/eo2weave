@@ -96,6 +96,7 @@ export function ConversationList({
     handleItemDeleteClick,
     handleItemTogglePin,
     handleItemExport,
+    handleItemCopyId,
     handleItemArchive,
     handleItemDelete,
     handleItemGenerateTitle,
@@ -134,6 +135,7 @@ export function ConversationList({
           onDeleteClick={handleItemDeleteClick}
           onTogglePin={handleItemTogglePin}
           onExport={handleItemExport}
+          onCopyId={handleItemCopyId}
           onArchive={handleItemArchive}
           onDelete={handleItemDelete}
           onGenerateTitle={handleItemGenerateTitle}
@@ -150,7 +152,7 @@ export function ConversationList({
         />
       </motion.div>
     )
-  }, [runningSet, activeWorkspaceId, pendingCountByConversationId, editingId, workspaceStatusMap, pinnedIds, workspaceScheduleCount, activeProjectId, reduceMotion, handleItemSelect, startRename, handleItemDeleteClick, handleItemTogglePin, handleItemExport, handleItemArchive, handleItemDelete, handleItemGenerateTitle, editingTitle, handleEditingTitleChange, confirmRename, cancelRename, handleRenameBlur, composing, setComposing, renameInputRef, t])
+  }, [runningSet, activeWorkspaceId, pendingCountByConversationId, editingId, workspaceStatusMap, pinnedIds, workspaceScheduleCount, activeProjectId, reduceMotion, handleItemSelect, startRename, handleItemDeleteClick, handleItemTogglePin, handleItemExport, handleItemCopyId, handleItemArchive, handleItemDelete, handleItemGenerateTitle, editingTitle, handleEditingTitleChange, confirmRename, cancelRename, handleRenameBlur, composing, setComposing, renameInputRef, t])
 
   return (
     <>

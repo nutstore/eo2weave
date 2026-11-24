@@ -186,6 +186,20 @@ export function useConversationActions({
     setExportConvId(id)
   }, [])
 
+  // Copy the raw conversation ID — the stable handle used by the WebMCP tools,
+  // the web app API and exported conversation JSON, so users can paste it
+  // straight into an agent prompt or a tool call.
+  const handleItemCopyId = useCallback(async (id: string) => {
+    try {
+      await navigator.clipboard.writeText(id)
+      // Echo the copied value so the user can verify they grabbed the right ID.
+      toast.success(t('sidebar.conversationIdCopied'), { description: id })
+    } catch (error) {
+      console.error('[Sidebar] Failed to copy conversation ID:', error)
+      toast.error(t('sidebar.copyConversationIdFailed'))
+    }
+  }, [t])
+
   const handleItemArchive = useCallback(async (id: string, _isArchived: boolean) => {
     const { archiveWorkspace, unarchiveWorkspace } = useConversationContextStore.getState()
     try {
@@ -298,6 +312,7 @@ export function useConversationActions({
     handleItemDeleteClick,
     handleItemTogglePin,
     handleItemExport,
+    handleItemCopyId,
     handleItemArchive,
     handleItemDelete,
     handleItemGenerateTitle,
