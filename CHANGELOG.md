@@ -1,3 +1,841 @@
+## [1.2.0] - 2026-11-24
+
+### 🚀 Features
+
+- *(gateway)* Adapt rate-limits UI to new credit-based response
+- *(extension)* Guide Edge users to the Edge Add-ons store
+- *(webmcp)* Register app-control tools on the EO2Weave page
+- *(webmcp)* Surface self-control tools in the external tools summary
+- *(webmcp)* Rename_conversation tool + self-context ids in prompt
+- *(seo)* AI-access and discovery static layer
+- *(agent)* Builtin slash command pack with builtin/skill grouping
+- *(i18n)* Localize slash-command prompt templates
+- *(seo)* Region-aware OG image, sitemap and favicon
+- *(storage)* Manual backup to a user-granted local directory
+- *(security)* Trust loopback dev origins on any port
+- *(ci)* Add i18n key-parity check
+- *(storage)* Reclaim SQLite free pages before backup via vacuumDatabase
+- *(ui)* Storage panel card with usage readout and space reclaim
+- *(skill-store)* Restore word-editor skill as installable store package
+- *(topbar)* Auto-remove delisted pinned models and fix vision fallback
+- *(web)* Region-gate the Nutstore AI gateway and add global-build extension onboarding
+- *(web)* Seed curated default pinned models for built-in providers
+- *(web)* Redesign agent toolbar with pill selects and usage donut
+- *(web)* Show friendly classified messages for LLM provider errors
+- *(web)* Show full date on hovering the turn timestamp
+- *(web)* Add WebMCP backend
+- *(runtime)* Add isolated QuickJS execution and JavaScript preflight
+- *(agent)* Integrate run_code with tool projection and deferred context
+- *(browser-extension)* Rename popup CTA to "Open side panel"
+- *(browser-extension)* Use a persistent global side panel on all browsers
+- *(agent)* Default read_image to tool-result image delivery (#44)
+- *(web)* Pre-conversation settings toolbar on the new-chat screen (#45)
+- *(web)* Redesign site UI and harden conversation persistence (#46)
+- *(agent)* Allow sync-to-opfs in plan mode
+- *(web)* Add agent profile panel for viewing and editing agent files
+- *(schedule)* Restore schedule core services, agent tool, and stores
+- *(schedule)* Wire schedule UI into layout, sidebar, topbar, and settings
+- *(schedule)* Cascade-delete schedules when their conversation is deleted
+- *(schedule)* Promote scheduled tasks and improve form
+- *(topbar)* Surface folder selector on mobile and group schedules in more menu
+- *(webmcp)* Add two-state workflows and adapter validation
+- *(webmcp)* Sync OPFS adapters into matching tabs
+- *(skills)* Add built-in WebMCP creator guidance
+- *(bash)* Implement external Bash command registration and execution
+- Impl browser bash command
+- *(agent)* Add portable explicit tool output
+- Add behavior tree package with core functionality and tests
+- Add scoped QuickJS session support with evaluation and cancellation handling
+- Add behavior tree integration and enhance workflow definitions
+- *(vfs)* [**breaking**] Add injected filesystem providers
+- *(browser)* Return structured eval results
+- *(shared)* Define WebMCP package contracts
+- *(extension)* Ship built-in WebMCP packages
+- *(webmcp)* Execute workflows from package roots
+- *(extension)* Mount WebMCP packages over VFS
+- *(extension)* Add WebMCP package management
+- *(skills)* Load extension-owned skills through VFS
+- *(extension)* Inject WebMCP adapter proxies into pages
+- *(agent)* Add durable runtime context journal
+- *(agent)* Collect runtime context from application state
+- *(agent)* Publish dynamic context through durable journal
+- *(webmcp)* Execute adapter workflows in the extension
+- *(browser)* Require active tabs for click
+- *(webmcp)* Add package deletion functionality and UI elements
+- *(providers)* Add MiniMax-M3.1-Flash and make it the curated default
+- *(conversation)* Create conversation immediately on New Chat
+- *(xiaohongshu)* Rebuild integration on adapter architecture
+- *(composer)* Allow sending a message with attachments and no text
+- *(ui)* Gateway re-login entry on credential expiry (issue #75)
+- *(folders)* Re-authorization banner for expired folder permissions
+- *(onboarding)* Disable composer input when no usable model is selected
+- *(sidebar)* Add a real "Choose local folder" button to the empty state
+- *(settings)* Default thinking mode ON (high) for new users (#89)
+- *(db)* Add conversations.kind column for direct-chat mode
+- *(agent)* DirectMode tool filtering for direct conversations
+- *(direct-chat)* Creation entry and sidebar grouping
+- *(direct-chat)* Conversation UI adaptations for kind='direct'
+- *(home)* Standalone chats entry on project home + topbar
+- *(chats)* User-facing standalone chat → project conversion with rollback on failed save
+- *(diff)* Inline track-changes highlighting for markdown diffs (#97)
+- *(sidepanel)* Rebuild package opt-in modal for builtin WebMCP packages (#102)
+- *(sidepanel)* Legacy recipe-protocol fallback for the package opt-in prompt (#114)
+- *(skill-store)* Add cw-legal-evidence-chain lawyer evidence analysis skill (#115)
+- *(web)* Add Nutstore AI recharge entries in settings and on credit exhaustion (#122)
+- *(webmcp)* Package registry installer — install external site packages from a registry (Tier 1) (#118)
+- *(web)* Skill promotion landing page /skill-install (#126) (#128)
+- *(webmcp)* Extension-side package registry management with mirror fallback (#144)
+- *(agent)* Support image generation with Codex OAuth (#156)
+- *(skills)* Add verified legal authority citations
+- *(webmcp)* Support targeted conversation creation
+- *(agent)* Consent-gate install_skill updates in code (#154)
+- *(composer)* Windowed random-access loading for text previews (#176)
+- *(webmcp)* Registry search + bounded package cards
+- *(layout)* Add an LLM provider management entry to the model switcher
+- *(webmcp)* Merge recipes and registry pages into one packages page
+- *(skills)* Localize slash-command descriptions from SKILL.md frontmatter
+- *(file-tree)* Show the Git branch of an authorized folder (#85)
+- *(webmcp)* Record install provenance instead of inferring it
+- *(packages)* Render registry rows with the built-in card's compact shape
+- *(mcp)* Adopt the official SDK and add background task management
+- *(mcp)* Adopt the official SDK and add background task management (#254)
+- *(web)* Add the regional marketing website
+- *(web)* Add the regional marketing website (#252)
+- *(chats)* Redesign standalone conversations and improve agent management (#262)
+- *(webmcp)* Say why the page-context card has no tools
+- *(webmcp)* Say why the page-context card has no tools (#274)
+- *(agent)* Cap context compression with an absolute token limit
+- *(credentials)* Centralize provider credential state (#286)
+- *(webmcp)* Expose tool discovery diagnostics (#293)
+- *(agent)* Run subagents asynchronously with durable completion delivery (#300)
+- *(chat)* Quote selected assistant text in the composer (#303)
+- *(chat)* Let the user skip an ask_user_question prompt (#311)
+- *(blog)* Serve the WordPress blog through an Express reverse proxy
+- *(provider)* Add OpenCode Go subscription support (#327)
+- *(store)* Trace project activation substeps and name a stalled step
+- *(run_code)* Orchestrate replayable subagent scripts and show steps on the card
+- *(run_code)* Show a run's parallel layers and keep steps across reloads
+- *(store)* Add second-level tracing inside the stalled activation step
+- *(chat)* Add /clear to empty a conversation in place
+- *(agent)* Agent team L1 board, and inherit the parent iteration limit
+- *(agent)* Give team members the run goal from the brief
+- *(run_code)* Retry one agent step without rerunning the rest
+- *(agent)* Run a team inside one script instead of a trail of steps
+- *(agent)* Support recursive listing and directory deletion on the team backend
+- *(agent)* Bound team board growth with a run-start sweep
+- *(web)* Add copy chat ID action to the sidebar chat menu (#356)
+
+### 🐛 Bug Fixes
+
+- *(test)* Exclude Playwright e2e specs from vitest collection
+- *(agent)* Forward sessionId to subagent AgentLoop for prompt_cache_key
+- *(webmcp)* Harden app-tools after code review
+- *(webmcp)* Background runs no longer steal the active workspace
+- *(webmcp)* Address re-review findings on app-tools
+- *(webmcp)* Address third-round review findings
+- *(gateway)* Distinguish top-up expiry from monthly reset wording
+- *(i18n)* Rename top-up pack label to credit pack
+- *(webmcp)* Pin self-context to the serving instance origin
+- *(agent)* Slash light-ops work in main-app mode via inline subject
+- *(seo)* Use the real weave logo in the OG image
+- *(seo)* Use the store listing art as a static OG image
+- *(extension)* Open the web app at /projects instead of the root
+- *(popup)* Paint cached codex usage before the live refresh
+- *(popup)* Cache banked reset credits with stale-while-revalidate
+- *(security)* Gate bridge relay behind type allow-list, pin codex token endpoints, make backup import a two-phase commit
+- *(i18n)* Use single-brace placeholders in backup-to-local strings
+- *(ui)* Give advanced-card actions a visible button affordance
+- *(test)* Polyfill localStorage clobbered by Node 25 experimental stub
+- *(i18n)* Complete missing ja/ko translations and localize folder-access toasts
+- *(ui)* Add breathing room between welcome onboarding card and input
+- *(storage)* Raise worker request timeout for VACUUM and skip low-free-list dbs
+- *(storage)* Drop pre-backup VACUUM from backup paths
+- *(codex)* Use live catalog and restore native host relay
+- *(sync)* Recover diff preview body via runtime and cache fallbacks
+- *(storage)* Repair vacuum tests and double-close in the skip path
+- *(web)* Persist the AI-setup skip and streamline onboarding cards
+- *(web)* Suppress html-level hydration warning from extension attributes
+- *(web)* Hand side-panel folder picking off to a full tab
+- *(web)* Stop teaching the model to fabricate call_tool names
+- *(web)* Purge stale gateway token so a dead session shows the login button
+- *(web)* Pin FileDiffViewer content source to the requesting conversation
+- *(web)* Stack popover buttons vertically in bottom-left corner
+- *(extension)* Stop Edge side-panel reload on tab switch via settle protocol
+- *(browser-extension)* Pass object input to native ModelContext.executeTool
+- *(browser-extension)* Support current and legacy WebMCP contexts
+- *(web)* Merge dynamic model cache into authoritative pin list
+- *(web)* Hide banner when extension is newer than web
+- *(web)* Make extension update checks channel-aware (#37)
+- *(web)* Prevent agent popovers from being clipped (#39)
+- *(models)* Parse provider-rich model metadata and prioritize API data (#42)
+- *(native-host)* Allow the Edge Add-ons listing to connect to the native host (#35)
+- *(web)* Keep a single new-project entry on the homepage (#47)
+- *(web)* Offer re-login instead of logout for an expired Nutstore AI session
+- *(web)* Give the thinking popover an elevated surface
+- *(extension)* Never answer a typeless bridge message
+- *(schedule)* Orphan-check bound conversation and scope tool timing map
+- *(schedule)* Don't auto-run missed occurrences — notify instead
+- *(schedule)* Stop reporting successful tool calls as failures
+- *(agent)* Tool failure badge trusts structured envelope fields only
+- *(agent-ui)* Render structured image tool output
+- *(agent)* Serialize concurrent bash worker calls
+- *(extension)* Wire workspace adapter invoker
+- *(agent)* Preserve exact context compression boundaries
+- *(agent)* Isolate nested Bash execution lanes
+- *(webmcp)* Enforce workflow deadlines and improve diagnostics
+- *(webmcp)* Harden builtin workflows against stale pages
+- *(web)* Unify the composer vision capability indicator
+- *(web)* Localize the image model picker
+- *(folder-access)* Retain top-level grants for side panels
+- *(folder-access)* Validate pending handles before replacing roots
+- *(sidebar)* Move schedule indicator before the conversation title
+- *(schedule)* Guard against empty workspace binding
+- *(folder-access)* Repair merge residue from #40 x #46
+- *(ui)* Composer uses theme tokens in dark mode
+- *(sidebar)* Show OPFS-generated files instead of the empty state
+- *(sidebar)* Count only tree-displayable OPFS content for the empty state
+- *(web)* Stabilize Nutstore AI token refresh
+- *(web)* Harden gateway token refresh against session races
+- *(web)* Observe refresh-settle rejection and assert post-logout result
+- *(home)* Keep the help dropdown menu visible and clickable
+- *(gateway)* Preserve 7-day refresh token across /v1/auth/refresh (issue #74)
+- *(gateway)* Validate both token TTLs on device login; tighten expiry test
+- *(ui)* Localize gateway re-login error messages
+- *(ui)* Drop auto-replay of the failed turn after gateway re-login
+- *(webmcp)* Pass object input to current executeTool APIs
+- *(webmcp)* Restore legacy-native string-input fallback in call boundary
+- *(webmcp)* Gate format-switch retry on pre-dispatch validation only
+- *(webmcp)* Validate malformed args locally before any executeTool call
+- *(folders)* Address review findings on permission banner and restore flow
+- *(folders)* Clear the banner immediately after a granted restore
+- *(onboarding)* Address review findings on composer gating and sidebar folder entry
+- *(onboarding)* Resolve round-2 review findings on credential gating
+- *(onboarding)* Resolve round-3 review findings on key-check caching
+- *(composer)* Warn on stale Codex OAuth selection instead of showing a dead model (#90)
+- *(db)* Cover flow-instance-only tier in queryMetaAll
+- *(chats)* Bind a project host when landing directly on /chats/:id
+- *(agent)* Close direct-mode sandbox escapes (run_code, bash, run_python secrets, image tools)
+- *(agent)* Omit project-bound context sources in direct mode
+- *(sqlite)* Persist metadata on legacy schemas and keep kind through backup restore
+- *(chats)* Stop silent project-context switches and stale route syncs in standalone chat space
+- *(chats)* Space-correct New chat, sidebar kind filter, and cold-route conversation loads
+- *(i18n)* Localize standalone chat default title (all four locales)
+- *(sqlite)* Exclude standalone chats from project-scoped search and listings
+- *(chats)* Rebind standalone chat hosts when their host project is deleted
+- *(agent)* Enforce direct-mode tool authorization in ToolRegistry.execute
+- *(agent)* Propagate directMode into flow ToolContext and strip host handle from python sandbox
+- *(chats)* Localize chat activity times with the app locale
+- *(i18n)* Localize conversation-kind save error toast; use English code comments
+- *(agent)* Exclude host file/process-capable tools from direct mode and guard executeNoRetry
+- *(chats)* Use the @/ alias for the ChatsHome import in ChatsHomeView
+- *(sqlite)* Rebind standalone-chat workspace hosts regardless of deleted project's active state
+- *(chats)* Drop stale setActive completions in standalone chat route sync
+- *(sqlite)* Include kind in metadata-select fallbacks independent of flow_instance_json
+- *(store)* Await kind persistence in convertDirectToProject and guard stale meta writes
+- *(agent)* Block project secret resolution in standalone chats
+- *(store)* Rebind standalone chat hosts before project deletion commits
+- *(sqlite)* Only cache schema-shaped failures in column probes
+- *(store)* Guard direct-chat conversion failure paths
+- *(store)* Serialize project deletion so overlapping deletes cannot strand host rows
+- *(chats)* Repair active pointer inside deletion chain, allow folder-less flow runs, and harden stale-sync tests
+- *(chats)* Report kind-persistence failure explicitly and skip stale-completion repair when route left
+- *(agent,store,hooks)* Close wave-3 sourcery findings on direct-chat boundaries
+- *(store)* Make deleteProject rebind-deletion failure-safe and decouple post-delete repair status
+- *(store)* Defer OPFS cleanup until after deleteProject commit and repair active pointer on repair failure
+- *(chats)* Close round-5 sourcery findings — deletion-safe activation, convert action in chats space, bounded switch wait, route-gated chat view
+- *(chats)* Client-side nav for the chats entry; bound host-activation wait
+- *(store)* Rebind workspaces and delete the project row in one SQLite transaction
+- *(chats)* Make project deletion atomic — rebind+delete in one SQLite transaction
+- *(chats)* Re-sync after timed-out activation/switch commits land late
+- *(chats)* Repair destination state when a timed-out host activation commits late
+- *(agent)* Load NO secrets into the Python sandbox in direct mode
+- *(store)* Bound post-delete OPFS cleanup so a hung flush cannot stall the deletion chain
+- *(store)* Cap OPFS deletion flush pass with an overall time budget
+- *(chats)* Gate the stale-completion repair on successful activation and liveness
+- *(agent)* Derive direct-mode tool gating from conversation kind at construction
+- *(sw)* Slim down Service Worker to offline app shell (#95)
+- *(agent)* Reasoned aborts + AbortError noise filter for agent cancellation (#99)
+- *(diff)* Expose track-changes fragments to assistive technology (#107)
+- *(adapter)* Route no-ref browser.eval through chrome.scripting + CDP idle auto-detach (#105)
+- *(sidepanel)* Correct the legacy opt-in fallback consent counting (#116)
+- *(webmcp)* Keep tool invocation working with legacy extensions (#120)
+- *(webmcp)* Recover transient catalog misses (#121)
+- *(sidebar)* Balance the empty-state title so it does not wrap with an orphaned character (#123)
+- *(extension)* Fall back to CDP eval when page CSP blocks evaluate compilation (#110)
+- *(changes)* Use the canonical formatter and extend the side-presence fix to SnapshotDetailDrawer (#124) (#127)
+- *(web)* Surface SQLite init failures on the projects page (#133)
+- *(agent)* Exclude project skills from direct-mode context and reject read_skill for them
+- *(sqlite)* Select successor and rebind workspaces inside the delete transaction
+- *(web)* Gate /chats/:chatId on activeConversationId matching the route
+- *(skill-install)* Trailing-space prefill to suppress the slash-command picker (#135)
+- *(webmcp)* Allow writes with legacy extension routing (#138)
+- *(web)* Close direct-chat Sourcery round-7 findings (skill-name leak, chats load-error state, test hygiene)
+- *(web)* Start conversation load from the standalone chats route on cold links
+- *(web)* Surface recoverable load error with Retry on the standalone chat route
+- *(config)* Drop deprecated baseUrl from tsconfig chain (#132)
+- *(webmcp)* Plugin-download security model — URL validation, private-endpoint blocking and remote cancel relay (#148)
+- *(agent)* Scroll-to-bottom under virtual scrolling (#142)
+- *(settings)* Treat an empty provider catalog as unknown, not all-pins-delisted (#150)
+- *(conversation)* Surface SQLite/OPFS load failures instead of rendering an empty history (#149)
+- *(gateway)* Retain models when catalog refresh fails (#151)
+- *(conversation)* Preserve state across load recovery
+- *(conversation)* Preserve user selection across pending loads
+- *(conversation)* Harden targeted transcript retries
+- *(conversation)* Transcript reads cannot resolve workspace failures
+- *(conversation)* Resolve workspace failures only when THIS run verified that workspace (#152)
+- *(conversation)* Gate fallback workspace resolution on the ensured workspace id (#152)
+- *(conversation)* Close round-2 review gaps in transcript and workspace recovery (#152)
+- *(skill)* Atomic per-invocation render writes + cite-restore binding (#155)
+- *(skill)* Harden renderer publish path + fix citation checksum semantics (#155)
+- *(conversation)* Bump the transcript watermark on every mutation path (#152)
+- *(conversation)* Close Sourcery findings on the transcript watermark (#160)
+- *(workspace)* Bind background runs to conversation workspaces
+- *(agent)* Preserve conversation identities across project switches
+- *(composer)* Refresh Agent mentions after catalog loading
+- *(agent)* Import agent-mention via the @/ path alias in routing module
+- *(agent)* Claim the per-conversation run slot before awaiting workspace setup
+- *(webmcp)* Roll back a created conversation when workspace setup fails
+- *(agent)* Gate the visible Agent catalog on the active project
+- *(agent)* Bound Agent-catalog initialization and release the in-flight slot on timeout
+- *(agent)* Reject a dispatch while another holds the conversation's run claim
+- *(webmcp)* Bound the metadata wait and clean up the workspace when creation fails
+- *(agent)* Validate delegate_to targets against the run's project catalog
+- *(agent)* Retry Agent catalog initialization after a transient failure
+- *(store)* Release run claim when workspace setup rejects
+- *(webmcp)* Make create_conversation timeout cleanup safe against unsettled setup
+- *(store)* Clear per-conversation Agent selection on conversation delete
+- *(agent)* Queue overlapping dispatches instead of rejecting them
+- *(agent)* Keep delegation handoffs from overwriting the saved Agent
+- *(webmcp)* Bound timeout cleanup sweeps in create_conversation
+- *(store)* Clear the saved Agent selection only after a successful delete
+- *(agent)* Recover from empty model turns (#163)
+- *(skill)* Publish the evidence-chain report with an umask-free, probe-free mode
+- *(skill)* Harden renderer publish flow without umask or path chmod
+- *(skill)* Never delete a swapped staging file and verify in bounded chunks
+- *(skill)* Make staging cleanup swap-safe and correct the OverflowError default
+- *(skill)* Clean up after failed Windows renames and fail on unverifiable output
+- *(skill)* Verify staging identity before Windows failure cleanup unlink
+- *(webmcp)* Polish the registry page install feedback and actions
+- *(webmcp)* Dismiss stale success toast when an operation fails
+- *(webmcp)* Lay out installed-row Repair and Remove actions side by side
+- *(webmcp)* Guard registry page feedback tokens and stale error clearing
+- *(webmcp)* Scope registry feedback tokens per package and bind toast to package id
+- *(gateway)* Select the curated value default after a fresh login
+- *(gateway)* Keep curated default selection for returning users (#169)
+- *(composer)* Preview pasted text attachments
+- *(composer)* Preserve attachments during sends
+- *(composer)* Preserve image and session attachment state
+- *(composer)* Harden attachment recovery and cleanup
+- *(composer)* Isolate attachment workspaces
+- *(composer)* Retry failed attachment cleanup
+- *(composer)* Bound attachment recovery waits
+- *(webmcp)* Apply direction-A visual redesign to the registry page (#168)
+- *(agent)* Queue dispatches arriving during an active run instead of dropping them (#166)
+- *(store)* Bound in-flight workspace ensures so a stalled entry cannot wedge a conversation (#166)
+- *(agent)* Reject the overlapping dispatch when the rerun queue is full (#166)
+- *(agent)* Drain stale rerun triggers when a run fails (#166)
+- *(agent)* Drain stale rerun triggers on every dispatch failure path (#170 review)
+- *(i18n)* Translate the workspace-setup timeout toast in all locales (#170 review)
+- *(agents)* Keep a project switch from letting stale CRUD results overwrite the catalog (#170 review)
+- *(conversations)* Clear Agent selections on the bulk-delete path too (#170 review)
+- *(agents)* Preserve accepted rerun triggers in the queue-full drain (#170 review)
+- *(webmcp)* Keep a claim-overlap run record queued until its follow-up finishes (#170 review)
+- *(conversations)* Stop compaction from turning rerun triggers into blank messages (#170 review)
+- *(gateway)* Observer-side session reconciliation and dispatch-time credential gate (#175)
+- *(gateway)* Restore dispatch error handling (#179)
+- *(skills)* Update installed skills when the store ships a newer version (#154)
+- *(skills)* Wire the version-aware update path through every install entry point (#154)
+- *(skills)* Serialize version decisions and deletes under the per-skill import lock (#154)
+- *(skills)* Decide bundle updates per member and read versions under the import lock (#154)
+- *(skills)* Treat unparseable versions as unknown, never overwrite (#154)
+- *(skills)* Decide bundle install members independently (#154)
+- *(skills)* Refresh SkillManager for every write outcome of an update (#154)
+- *(skills)* Round-4 review fixes — decline gate, store version in skip toast, docs, labels (#154)
+- *(skills)* Serialize editor SKILL.md saves with the import lock (#154)
+- *(skills)* Stop root bundle member absorbing sibling files (#154)
+- *(skills)* Reject bundles whose members infer duplicate dirNames (#154)
+- *(agent)* Keep installed skills usable when the store is unreachable (#154)
+- *(skills)* Run deleteSkill's existence check under the import lock (#154)
+- *(skills)* Preserve mid-download uninstalls in the per-member import (#154)
+- *(skills)* Normalize cached user-skill ids to dirNames in the scan fallback (#154)
+- *(skills)* Normalize a lowercase skill.md archive entry to SKILL.md (#154)
+- *(skills)* Exclude nested bundle members from their containing parent (#154)
+- *(skills)* Select the discover done toast from the install outcome (#154)
+- *(composer)* Cap text attachment preview size
+- *(composer)* Correct text-preview window boundaries and seam handling (#177)
+- *(composer)* Keep text-preview window byte offsets exact (#177)
+- *(composer)* Fix preview seam re-anchor for CRLF and layout (#177)
+- *(composer)* Count preview ranges in code points and keep BOM start flag (#177)
+- *(composer)* Keep the preview position across swaps and failures (#177)
+- *(composer)* Harden text-preview window invariants (#177)
+- *(composer)* Keep preview anchors exact across EOL-normalized swaps (#177)
+- *(discovery)* Respect workspace gitignore rules
+- *(discovery)* Honor directory-only ignore rules
+- *(discovery)* Skip gitignored files in recursive deletion
+- *(discovery)* Extend delete gitignore filter to OPFS-only entries
+- *(opfs)* Stop negated gitignore rules re-including paths under an excluded directory
+- *(webmcp)* Registry search tool-index correctness and preview reachability
+- *(sidepanel)* Resolve the startup workspace before navigation (#194)
+- *(startup)* Restore custom providers before the gateway network block (#188)
+- *(settings)* Coalesce concurrent getAvailableProviders runs into one (#188)
+- *(gateway)* Register startup gateway with a loading catalog status (#188)
+- *(switcher)* Soft-land superseded provider snapshots instead of blanking (#188)
+- *(switcher)* Stale-while-revalidate refresh, run-level snapshot gate, bounded gateway restore (#188)
+- *(models)* Invalidate stale discovery snapshots
+- *(models)* Refresh selectors after provider changes
+- *(models)* Sync provider refresh across tabs
+- *(models)* Show loading for empty catalog refresh
+- *(startup)* Guard best-effort gateway status writes in bootstrap catch (#188)
+- *(switcher)* Narrow reconcile defer and dim stale refresh list (#188)
+- *(startup)* Show workspace content after conversation restoration (#195)
+- *(webmcp)* Registry-search cache coherence for removed and failed previews
+- *(webmcp)* Registry-search index versioning, pending visibility, and bounds
+- *(skills)* Surface OPFS storage errors instead of treating them as absence
+- *(skills)* Treat a failed overwrite check as a possible overwrite in the drop zone
+- *(skills)* Propagate deleteSkill existence-check errors instead of deleting SQLite-only
+- *(skills)* Keep loaded user skills when a refresh scan fails
+- *(skills)* Treat a missing OPFS API as absence in the installed-skill scan
+- *(skills)* Do not mark completed store operations failed when the rescan errors
+- *(skills)* Serialize createSkillSkeleton's check and write under the import lock
+- *(skills)* Report members dropped mid-install instead of plain success (#185 req. 3)
+- *(skills)* Surface partial member drops on any successful install outcome
+- *(skills)* Close out Sourcery round-N findings on skill storage errors (#185)
+- *(skills)* Return scan provenance with the names instead of a shared flag
+- *(opfs)* Stop directory-only gitignore rules matching same-named regular files
+- *(opfs)* Stop trailing-/** gitignore rules matching their base directory
+- *(web)* Stop FileTreePanel marking a same-named file ignored under dir/** rules
+- *(opfs)* Re-include files below a negated directory rule
+- *(web)* Share the backend ignore policy with the file tree
+- *(web)* Merge nested .gitignore rules into the file tree
+- *(layout)* Promote provider setup entry when no visible provider has models
+- *(layout)* Reset Settings tab after a one-shot provider-settings request
+- *(store)* Keep one-shot panel open requests out of persistence
+- *(store)* Clear a pending settings open request when hydrating
+- *(extension)* Revalidate web-fetch redirects against private address space (#157)
+- *(extension)* Recompute redirect hop requests instead of replaying init
+- *(extension)* Only treat Fetch redirect statuses as redirect hops
+- *(extension)* Never retry a policy refusal through render mode
+- *(extension)* Revalidate the extracted document URL after executeScript
+- *(extension)* Return a refused render instead of a retryable status-0 error
+- *(extension)* Refuse 6to4 literals that embed a forbidden IPv4
+- *(extension)* Refuse local-DNS suffixes such as .lan and .home
+- *(extension)* Return a refused render from the SPA-shell fallback
+- *(webmcp)* Classify packages by install directory, not manifest id
+- *(webmcp)* Let installed registry packages be enabled from their row
+- *(webmcp)* Mark a cached catalog stale when a forced refresh fails
+- *(webmcp)* Clear recovered registry notices on a successful render
+- *(webmcp)* Scope catalog ids to the configured registries
+- *(webmcp)* Only take down the toast the removed package owns
+- *(webmcp)* Render each section as its own source settles
+- *(webmcp)* Keep the installed list usable when one manifest is unreadable
+- *(webmcp)* Harden the registry section's in-flight catalog state
+- *(webmcp)* Keep the registry list usable when one activation read fails
+- *(packages)* Report an unreadable user mount instead of an empty "mine"
+- *(skills)* Keep localized descriptions across storage, inline editor and multi-subtag locales
+- *(skills)* Truthful install/update state and bundle-update consent (#183, #197)
+- *(skills)* Render manifest-provided names as plain text in consent prompts
+- *(skills)* Settle a pending bundle-update consent instead of dropping it
+- *(skills)* Reset landing-page state that belongs to the previous skill
+- *(skills)* Offer Install on the chat card when the target was dropped
+- *(skills)* Do not report a vanished sibling as a kept installed copy
+- *(skills)* Report sibling-only updates truthfully and keep copies that changed after consent
+- *(skills)* Drop user-skill scans that predate a completed delete
+- *(skills)* Repair hand-written frontmatter when reading localized descriptions
+- *(i18n)* Use common.loading instead of hardcoded "Loading..." (#13)
+- *(i18n)* Localize in-progress labels in the tool renderers
+- *(i18n)* Localize the remaining bare tool status words
+- *(gateway)* Register the provider when a usable session outlives an unregistered tab
+- *(gateway)* Fence credential status writes against a replaced session
+- *(gateway)* Fence the remaining credential status verdicts
+- *(gateway)* Release the run claim when the gateway gate fails early
+- *(gateway)* Attribute the refresh verdict to the session it committed
+- *(gateway)* Skip provider registration when the credential set moved
+- *(gateway)* Register the provider when the resolution refreshed the token itself
+- *(gateway)* Vouch token currentness against the SQLite fallback too
+- *(gateway)* Treat a credential re-read failure as retryable, not a logout
+- *(gateway)* Re-resolve the dispatch credential once when another tab refreshed it
+- *(chats)* Branch keeps the source kind and navigates inside /chats
+- *(model-switcher)* Make the catalog retry report what it did (#219)
+- *(model-switcher)* Only warn about the gateway catalog on the gateway
+- *(model-switcher)* Report the real retry outcome and clear stale failures
+- *(model-switcher)* Read the catalog status instead of inferring it
+- *(model-switcher)* A successful empty refresh clears the failure line
+- *(model-switcher)* Render the catalog notice when the catalog is empty
+- *(model-switcher)* Keep recovery controls visible and scope them by capability
+- *(file-tree)* Show the branch badge for every root kind
+- *(file-tree)* Keep the branch poll alive through a stalled read
+- *(file-tree)* Hold one branch read at a time and keep state stable
+- *(file-tree)* Bound the HEAD read and pace native-host polling
+- *(file-tree)* Stat before reading HEAD and bound the poll
+- *(file-tree)* Reject the Arabic Letter Mark in ref names
+- *(bootstrap)* Stop a token-less boot from declaring the gateway catalog failed
+- *(gateway)* Stop a storage event from unregistering a provider that works
+- *(gateway)* Keep the provider registered unless a logout is confirmed
+- *(settings)* Preserve session providers during cross-tab sync
+- *(models)* Avoid redundant refreshes while idle
+- *(webmcp)* Close the provenance gaps Sourcery found after #229
+- *(webmcp)* Never offer a destructive action on indeterminate provenance
+- *(gateway)* Give each no-token credential outcome its own catalog write
+- *(gateway)* Fence every credential outcome on the catalog version it owns
+- *(gateway)* Keep the provider registered when an expired purge lands
+- *(gateway)* Purge the catalog from a synchronous token-purge listener
+- *(gateway)* Resync the cached api-key verdict when a purge drops credentials
+- *(gateway)* Scope the post-purge key resync to the selected provider
+- *(sidepanel)* Keep startup visible through route loading
+- *(sidebar)* One root-row shape and a branch label that yields first
+- *(sidebar)* Let the branch label yield, keep tree state, restore panel header
+- *(webmcp)* Record install provenance instead of inferring it on the web side
+- *(webmcp)* Prove ownership before replacing or removing a package
+- *(webmcp)* Fence uninstall after the ownership read and reject stale downgrades
+- *(webmcp)* Isolate package validation so one bad package cannot empty the catalog
+- *(webmcp)* Drop the package-count ceiling too
+- *(webmcp)* Charge the size budget before parsing; clear stale rejections
+- *(chats)* Adopt useSidePanelSessionRecovery in the chats layouts
+- *(chats)* Stop the chats home load effect retrying on loadError
+- *(project)* Stop the project home cold-load effect retrying on loadError
+- *(sidebar)* Keep retry in-flight state across sidebar collapse
+- *(store)* Keep conversations deleted during a pending load deleted
+- *(store)* Keep the deletion log until the next run starts
+- *(store)* Re-check the deletion log when the load installs
+- *(mcp)* Never follow redirects in the network relay
+- *(agent)* Make subagent cancellation and timeouts enforceable
+- *(mcp)* Allow intranet MCP endpoints on the v2 relay
+- *(marketing)* Synchronize extension status subscribers (#258)
+- *(store)* Create the conversation row before inserting branch messages
+- *(ui)* Surface branch failures instead of logging only
+- *(store)* Let the branch caller own the failure toast
+- *(store)* Let the branch caller own the failure toast (#261)
+- *(i18n)* Move the conversation store's hardcoded toasts into the locales
+- *(i18n)* Move the conversation store's hardcoded toasts into the locales (#263)
+- *(i18n)* Move the remaining hardcoded toasts into the locales
+- *(i18n)* Move the remaining hardcoded toasts into the locales (#267)
+- *(agent)* Fall back to a truncation summary when compression fails
+- *(agent)* Fall back to a truncation summary when compression fails (#269)
+- *(agent)* Keep the transcript when compression fails
+- *(agent)* Keep the transcript when compression fails (#270)
+- *(sqlite)* Exclude standalone-chat hosts from project stats
+- *(packages)* Bound the section list loads so a hung request fails visibly
+- *(packages)* Bound the section list loads so a hung request fails visibly (#272)
+- *(sidepanel)* Keep toast notifications clear of model selector
+- *(settings)* Invalidate the gateway credential cache on a provider switch
+- *(settings)* Drop the credential cache on a workspace provider restore
+- *(agent)* Thread the compression cap into flow-node agents
+- *(settings)* Keep the compression cap input editable
+- *(schedule)* Keep headless runs on the ratio trigger
+- *(settings)* Keep the previous cap when the input is emptied
+- *(compression)* Bound the trim budget and stop summary thrash
+- *(compression)* Harden the cap gate against counter skew and add coverage
+- *(settings)* Treat a non-positive stored cap as "unset"
+- *(schedule)* Keep summarising headless runs
+- *(settings)* Take gateway availability from the session, not the key shadow
+- *(settings)* Honor a flush check while the gateway verdict is unknown
+- *(settings)* Stop deciding gateway state from the api-key shadow
+- *(gateway)* Give every dispatch path a credential again (#277)
+- *(settings)* Seed the badge from the pair; match only the Nutstore AI marker
+- *(store)* Resolve the follow-up credential from the session (#277)
+- *(gateway)* Resolve session and clean up legacy credentials
+- *(gateway)* Keep unknown credential state neutral
+- *(gateway)* Allow session recovery from welcome screen
+- *(sync)* Only report "missing credential" after the check completed
+- *(gateway)* Keep the expired verdict stable after the purge (#282)
+- *(credentials)* Preserve recovery actions across dispatch paths (#290)
+- *(browser)* Provide capability-specific compatibility guidance (#291)
+- *(gateway)* Preserve refreshed sessions and pending logins (#294)
+- *(schedule)* Resolve configuration for the scheduled provider (#295)
+- *(auth)* Enforce gateway credential commit boundaries (#296)
+- *(conversation)* Refresh the page-context snapshot on resend
+- *(brand)* Update Chinese product name and English homepage layout (#301)
+- *(llm)* Prefer extension transport and restore Volcengine models (#304)
+- *(agent)* Preserve context during conversation compaction
+- *(agent)* Harden compaction admission and transcript recovery
+- *(composer)* Resume sends no longer consume staged attachments (#307)
+- *(agent)* Unblock run completion from agent notification path
+- *(agent)* Detect the viewed conversation via the store, not the URL
+- *(webmcp)* Read the provider-scoped model cache entry
+- *(webmcp)* Skip an unusable model cache entry instead of shadowing
+- *(webmcp)* Keep queued messages from clobbering live state
+- *(webmcp)* Read live state and reuse the persisted queued-message id
+- *(webmcp)* Append queued prompts in enqueue order and reuse the persisted record
+- *(webmcp)* Keep a queued background send in the background on the compaction path
+- *(webmcp)* Let an edited queued prompt reach the turn that runs it
+- *(webmcp)* Stop mirroring a queued prompt into the transcript
+- *(webmcp)* Let an edited queued prompt replace its transcript copy
+- *(webmcp)* Persist a queued message at its transcript index
+- *(webmcp)* Replace a queued prompt's record when its attachments changed
+- *(blog-proxy)* Close the residual path, header, redirect and body-read gaps
+- *(blog-proxy)* Decode escapes leniently and answer body timeouts before closing
+- *(browser-extension)* Cache Codex model catalog for five minutes
+- *(browser-extension)* Invalidate stale Codex catalog requests
+- *(browser-extension)* Revalidate token before caching the Codex catalog
+- *(browser-extension)* Cache Codex model catalog for five minutes (#320)
+- *(browser-extension)* Recheck the catalog sequence after the token read
+- *(browser-extension)* Keep storage failures out of the endpoint probe
+- *(web)* Keep virtualized conversations pinned to the bottom while the agent runs
+- *(web)* Harden the bottom-pinning loop's exit and re-arm paths
+- *(web)* Anchor the scroll-to-bottom button to the chat column's right edge
+- *(web)* Make the scroll button's anchor font-relative and clear the nav rail
+- *(web)* Auto-copy selected message text to the clipboard (#325)
+- *(web)* Scroll conversations to the true bottom on switch (#324)
+- *(run_code)* Keep emitted output parts when a script fails
+- *(sqlite)* Make migration v23 bump only its own version floor
+- *(store)* Stop an unanswered permission query from freezing activation
+- *(store)* Pay the permission probe deadline once, and shorten it to 2s
+- *(web)* Preview attachments of queued messages
+- *(agent)* Keep sync-to-disk interactive under manual apply
+- *(store)* Open the project first, resolve folder permission in the background
+- *(store)* Make the manual-apply read strict without a workspace id
+- *(store)* Make re-authorization actually respond, and never fire it twice
+- *(folder-access)* Diagnose a stalled permission call instead of guessing
+- *(folder-access)* Re-pick a stalled root instead of re-asking a dead handle
+- *(agent)* Resolve agent mode per conversation instead of the open tab
+- *(agent)* Refuse switch_agent_mode without a conversation context
+- *(agent)* Pin the team board run when a member is spawned
+- *(agent)* Stop holding every past subagent transcript in memory
+- *(context)* Stop a prompt edit from re-snapshotting every source
+- *(context)* Store a digest of the request envelope, not the envelope
+- *(agent)* Stop a transcript from nesting inside itself without a limit
+- *(sqlite)* Never move user_version backwards on an unreadable read
+- *(web)* Phrase gateway credit deadlines as expiries, not resets
+- *(web)* Make the dev source-map override survive Next's devtool setup
+- *(agent)* Release a persisted subagent's history and reload only what a resume needs
+- *(store)* Evict the persist scheduler after its final save settles
+- *(agent)* Run team board mutations one at a time
+- *(agent)* Offer web tools on desktop even when the extension is absent
+- *(context)* Keep an actor's published persona when its read fails
+- *(store)* Keep eviction blocked after a failed debounced save
+- *(web)* Treat iPadOS as mobile when registering web tools
+- *(agent)* Fail a team board write instead of waiting forever
+- *(agent)* Keep a hydrated child's boundary and result intact
+- *(web)* Stop calling the agents-store hook conditionally
+- *(web)* Declare Node.js types for tests and tooling
+- *(web)* Declare Node.js types for tests and tooling
+- *(sqlite)* Guard the envelope migration against rows that are not JSON
+- *(agent)* Recover a task transcript when the stored row holds no messages
+- *(agent)* Record a stopped team member as blocked on its board
+- *(agent)* Fail a team board write it could not read
+- *(agent)* Retire every stale copy of a retried step
+- *(agent)* Keep a member's identity across a reload
+- *(agent)* Re-read a resumed member's task from the board
+
+### 📚 Documentation
+
+- *(readme)* Add Chrome Web Store and Edge Add-ons badges and extension install section
+- *(readme)* Drop LLM Wiki from roadmap
+- *(webmcp)* Document extension-owned workflow runtime
+- *(webmcp)* Align README retry description with pre-dispatch-only policy
+- *(webmcp)* Scope the no-side-effect guarantee to locally-validated rejects
+- *(skills)* Harden legal-citation guidance per PR #153 review
+- *(skills)* Close 4 medium review findings on legal-citation guidance (#155)
+- *(skills)* Add non-global shared address ranges to the citation fetch blocklist (#159)
+- *(models)* Clarify catalog and discovery status
+- *(extension)* Record the unhandled NAT64 /48 embedding as a limitation
+- *(web)* State that web_fetch does not follow redirects
+- *(agent)* Tutorial for adding a custom agent tool (#1)
+- *(agent)* Prompt on destructive OPFS operations, not just disk/network
+- *(agent)* Correct the authorization section (#1 review)
+- *(agent)* Move the Chinese tutorial so both locales share its slug
+- *(agent)* Drop the old nested Chinese tutorial path
+- *(agent)* Point the guide index at the moved tutorial
+- *(agent)* Document yolo/memory behaviour and fix the example snippets (#1 review)
+- *(agent)* Mirror the yolo/memory notes and the snippet fixes
+- *(agent)* Document plan-mode memory, yolo scope and the abort re-check
+- *(agent)* Keep the irreversible example key-less and link docs by route
+- *(agent)* Scope the schema subset and drop the stale snapshot_restore precedent
+- *(agent)* Qualify the memoryKey claim against YOLO mode
+- *(mcp)* Name the real cross-tab guard in observe()
+- *(agent)* State what stopAll actually guarantees
+- *(comments)* Drop quotes that imply a literal English prompt
+- *(agent)* Say that manual apply does not cover shell commands
+- *(agent)* Record the P4 acceptance evidence
+- *(plans)* Record the memory and storage round as M1
+- *(store)* Drop a plan path that is no longer tracked
+
+### ⚡ Performance
+
+- *(file-tree)* Poll the branch once per root
+- *(marketing)* Reduce hero background image size by 75% (#302)
+- *(sqlite)* Digest the envelopes already stored in context commits
+- *(sqlite)* Compact stored envelopes with plain SQL
+- *(agent)* Hydrate subagent tasks without their transcripts
+- *(agent)* Drop a finished member's transcript from the store
+
+### 🚜 Refactor
+
+- *(opfs)* Extract workspace-runtime sections into dedicated modules
+- *(store)* Extract persistence, message-ops and agent-run modules from conversation.store.sqlite.ts
+- *(web)* Consolidate unconfigured-state LLM provider entries
+- *(agent)* Share tool invocation and collect deferred context
+- *(workspace)* Remove unfinished Recent Files feature
+- *(webmcp)* Adopt package manifests and step schema contracts
+- *(agent)* Consolidate run_code execution path and drop dead wiring
+- *(runtime)* Share preflight failures and interruption handling
+- *(webmcp)* Drop duplicate package parsing and reuse shared helpers
+- Add QuickJS runtime package with execution capabilities
+- Impl webmcp adapter running in the browser extension background
+- Improve adapter workflow handling and remove unnecessary authorization checks
+- Update adapter runtime to use behavior trees and improve workflow execution
+- *(webmcp)* Remove legacy recipe injection and opt-in
+- *(agent)* Separate message identity from transport role
+- *(extension)* Remove unused adapter package reader
+- *(webmcp)* Compose builtin workflows through page readers
+- *(settings)* Move theme under an Appearance tab
+- *(webmcp)* Type executeWebMCPTool context as ToolContext
+- *(webmcp)* Migrate Xiaohongshu to adapter workflows
+- *(onboarding)* Remove mount-folder step from the state machine
+- *(direct-chat)* Remove sidebar grouping and add /chats route space
+- *(direct-chat)* Rename user-facing copy to standalone chats
+- Deduplicate formatBytes/formatSize utilities into canonical lib/utils (#14) (#119)
+- *(model-switcher)* Make the catalog banner a per-provider surface
+- *(file-tree)* Import GitBranchBadge through the @/ alias
+- *(store)* Extract the conversation eviction policy into its own module
+- *(sidebar)* Split the monolithic Sidebar into focused modules
+- *(store)* Extract the conversation load pipeline from the SQLite store
+- *(mcp)* Give the remote-execution lock a single, self-describing owner
+- *(settings)* Read the compression cap range from one constant
+- *(gateway)* Delete the api-key shadow (#277)
+- *(agent)* Remove explicit subagent waiting (#305)
+- *(webmcp)* Type app-tool contracts
+- *(webmcp)* Validate app-tool arguments at the boundary
+- *(web)* Remove composer fade overlay for a seamless scroll area
+- *(agent)* Keep team boards inside the conversation workspace
+
+### 🎨 Styling
+
+- *(web)* Icon-only local connection button in FolderSelector
+- *(web)* Swap FolderSelector title attributes for tooltips
+- *(web)* Refine composer area visuals
+- *(web)* Align run-end-policy pill font size with sibling pills
+- *(web)* Size the model switcher trigger to its content
+- *(store)* Import the eviction module through the @/ alias
+- *(store)* Import the extracted load module through the @/ alias
+- *(comments)* Keep model-fetcher section dividers aligned
+
+### 🧪 Testing
+
+- *(store)* Add persistence and merge coverage ahead of store split
+- *(opfs)* Add pending queue lifecycle and sync semantics coverage
+- *(web)* Cover banner behavior for newer-than-web extension installs
+- *(webmcp)* Add live MV3 workflow coverage
+- *(webmcp)* Verify extension-owned workflows without a workspace
+- *(folder-access)* Cover side-panel permission handoff
+- *(folder-access)* Reject non-granted permission states
+- *(web)* Import llm-gateway-auth via the @/ path alias
+- *(composer)* Cover attachment-only send rendering and mocks
+- *(components)* Cover ErrorBoundary fallback, onError, and retry-recovery paths
+- *(components)* Strengthen componentStack assertions and use @/ alias in ErrorBoundary test
+- *(webmcp)* Pin call-format matrix and read-only format-switch retry
+- *(webmcp)* Narrow malformed-args retry test to what dispatch mocks can prove
+- *(webmcp)* Faithful per-generation boundary mocks with handler-level safety matrix
+- *(folders)* Wait for the denial toast before asserting banner visibility
+- *(onboarding)* Make round-4 review findings regression-proof
+- *(settings)* Regression-proof the cache-hit hasApiKey state sync
+- *(direct-chat)* Kind store/migration/filtering coverage
+- *(direct-chat)* Explicit tool-name assertions and a genuinely executing kind roundtrip
+- *(agent)* Assert the exact direct-mode authorization error; chore(i18n): English file-header comments
+- *(agent)* Cover host-capable exclusions and executeNoRetry guard; fix vacuous web_search assertion
+- *(store)* Cover convertDirectToProject flow and setConversationKind rollback
+- *(store)* Strengthen direct-chat persistence coverage, use @/ aliases
+- *(store)* Assert literal kind values in loadFromDB roundtrip instead of echoing saveMeta
+- *(hooks)* Cover stale route-sync completions in standalone chat activation
+- *(chats)* Harden saveMeta kind assertions against any conflict-write form
+- *(agent)* Register checkpoint tools in shared setup for direct-mode tests
+- Tighten direct-mode and kind-binding coverage (register db_query, assert full INSERT param order)
+- *(agent)* Assert INVALID_INPUT exactly for empty delegate target in direct mode
+- *(diff)* Harden track-changes a11y visibility assertions (#108)
+- *(a11y)* Add e2e axe-core coverage for track-changes diff (#112)
+- *(skills)* Assert direct-mode reads never touch native FS and adopt @/ alias
+- *(agent)* Reset run_python mocks between secret-injection tests
+- *(agent)* Register db_query before direct-mode definition exclusion check
+- *(conversation)* Release orphan in-flight load slot between scenarios (#152)
+- *(conversation)* Verify the transcript retry re-reads the failed conversation (#152)
+- *(agent)* Isolate project initialization in gateway tests
+- *(agent)* Exercise the production mention-agent selector
+- Import web modules through the @/ alias in PR test files
+- Strengthen retry, timeout-cleanup and persistence-wait assertions
+- *(skill)* Pin the renderer's publish mode, checksum and staging invariants
+- *(skill)* Make the renderer permission tests race-free and umask-exact
+- *(webmcp)* Cover registry page toast/state feedback races
+- *(composer)* Use workspace import aliases
+- *(agent)* Cover the #170 review fixes — trigger drains, catalog staleness, bulk-delete selection, locale key (#170 review)
+- *(store,webmcp)* Cover the round-2 #170 review fixes — accepted-trigger preservation, compaction rerunOnly, claim-overlap run records (#170 review)
+- *(discovery)* Pin directory-only gitignore rule semantics
+- *(webmcp)* Regression coverage for round-6 registry-search findings
+- *(webmcp)* Align plugin-download tests with the host allowlist
+- *(web)* Make the Web Locks stub writable so tests can restore it
+- *(sqlite)* Assert transaction ordering instead of pre-init-lock timing (#203)
+- *(sqlite)* Identify each write by SQL so a swapped order fails (#203)
+- *(webmcp)* Make the package-B uninstall and toast assertions real
+- *(skills)* Cover aggregated bundle consent and the install-flow options
+- *(webmcp)* Mock the detailed catalog reader in the package-management tests
+- *(webmcp)* Keep the package-list fixtures from passing on an empty result
+- *(gateway)* Wait for the credential-status write instead of racing a timer
+- *(gateway)* Assert the guidance and synchronize the stale-verdict write
+- *(gateway)* Assert the rotated credential actually reaches the provider
+- *(skills)* Assert user-skill content in the direct-mode read_skill case
+- *(file-tree)* Exercise the .git-as-file and null-root paths
+- *(store)* Harden eviction policy assertions
+- *(store)* Cover the load pipeline's watermark and selection state
+- *(store)* Assert a neighbour's pending read survives a conversation delete
+- *(mcp)* Cover task card state and elicitation/sampling mapping
+- *(agent)* Cover subagent cancellation and the default deadline
+- *(agent)* Assert the compression gate honours the absolute cap
+- *(compression)* Prove the withheld convert after a summary stays small
+- *(gateway)* Drop the credential-status double from startup discovery (#281)
+- *(webmcp)* Cover the app-tool argument boundary
+- *(webmcp)* Cover the registration path and the pagination cap
+- *(webmcp)* Assert the queued prompt actually reaches the transcript
+- *(store)* Assert the activation-timeout path opens both UI gates
+- *(agent)* Guard metadata-only subagent hydration
+
+### ⚙️ Miscellaneous Tasks
+
+- *(i18n,store)* Add ja/ko extension locales and clear no-explicit-any debt
+- *(release)* Build extension and native-host artifacts on tag push
+- *(release)* Attach CHANGELOG section as release notes
+- *(extension)* Drop the new-tab fallback for side panel open failures
+- *(i18n)* Drop redundant pathHiddenHint from backup-to-directory card
+- *(ci)* Run i18n parity check in pre-commit hook too
+- *(ci)* Drop i18n parity workflow — pre-commit hook covers it
+- *(browser-extension)* Bump version to 1.1.7
+- *(i18n)* Remove orphaned extension keys and dead backup-settings re-export (#43)
+- *(extension)* Distinguish development builds and origins (#41)
+- *(i18n)* Drop recent-files keys
+- *(providers)* Refresh Nutstore AI curated default to DeepSeek-V4.1-Flash-1017
+- *(extension)* Enable typecheck and clean mechanical errors
+- *(i18n)* Drop the unused settings.imageGen strings
+- *(routes)* Remove draft ?new=1 mechanism
+- Retrigger fork PR recompute
+- *(webmcp)* Add happy-dom devDependency for registry page tests
+- *(switcher)* Comment wording cleanups (#188)
+- *(repo)* Stop tracking worktree symlinks and ignore them
+- *(webmcp)* Drop an accidentally added node_modules symlink
+- *(i18n)* Drop the dead literal fallback next to common.loading
+- *(welcome)* Remove the local-first privacy hint
+- Fix validation regressions from latest main
+- *(web)* Remove the dead mobile upload stack
+- *(merge)* Reconcile feat/mcp-task-interaction with main
+- *(merge)* Reconcile feat/mcp-task-interaction with main
+- *(web)* Remove the dead WebContainer feature
+- *(web)* Remove the dead WebContainer feature (#265)
+- *(gateway)* Remove legacy access-token shadow on startup (#288)
+- *(i18n)* Drop the orphaned workflowEditor api-key toast key
+- *(comments)* Translate Chinese comments to English in opfs and folder-access
+- *(comments)* Translate Chinese comments to English in web/agent (area 2)
+- *(comments)* Translate Chinese comments to English in web/store and test-helpers (area 3)
+- *(comments)* Translate Chinese comments to English in web/skills and web/components (area 4)
+- *(comments)* Translate the remaining Chinese comments to English (area 5)
+- *(web)* Let an env var pick the dev webpack devtool
+- *(docs)* Stop tracking plan documents
+- *(test)* Run the webpack config test with the rest of the suite
+- *(web)* Clear the pre-existing lint errors
+- Sync main after Node.js types fix
+- *(agent)* Prune retired batch-spawn surfaces and wire board retirement
+- *(release)* V1.2.0
+
+### 💼 Other
+
+- *(scripts)* Convert shell scripts to zx-based mjs scripts
+- *(schedule)* Restore schedule namespace and settings toggle keys
 ## [1.1.7] - 2026-09-18
 
 ### 🚀 Features
@@ -65,12 +903,7 @@
 - *(extension)* Detect DuckDuckGo bot-challenge and throttle to Baidu
 - *(llm)* Never emit developer role for Chinese and dynamic providers
 - Preserve original content in format diffs
-
-### 🚜 Refactor
-
-- *(web)* Remove FolderTipBubble folder-mount onboarding bubble
-- *(skills)* Drop word-editor skill, move nol-editor to skill store
-- *(agent)* Drop untrustedContentHint from call-side authorization
+- *(release)* Keep package versions independent
 
 ### 📚 Documentation
 
@@ -81,6 +914,12 @@
 ### ⚡ Performance
 
 - *(web)* Count virtualization threshold in messages, resolve scroller in layout phase
+
+### 🚜 Refactor
+
+- *(web)* Remove FolderTipBubble folder-mount onboarding bubble
+- *(skills)* Drop word-editor skill, move nol-editor to skill store
+- *(agent)* Drop untrustedContentHint from call-side authorization
 
 ### 🎨 Styling
 
@@ -98,6 +937,7 @@
 - *(skill-store)* Rebrand CreatorWeave references to EO2Weave
 - Consolidate changelog and generate from conventional commits
 - Add automated release script
+- *(release)* V1.1.7
 ## [1.1.6] - 2026-09-01
 
 ### 🚀 Features
@@ -125,15 +965,15 @@
 - *(i18n)* Act mode copy said full access — it is confirmed-per-operation now
 - *(web)* AgentRichInput reset effect must not clear assets on editor creation
 
+### 📚 Documentation
+
+- *(web)* Tool authorization redesign design doc + test adaptation
+
 ### 🚜 Refactor
 
 - [**breaking**] Remove WASM plugin system and Rust build pipeline
 - [**breaking**] Remove relay server, remote control and session sync
 - *(web)* Close all remaining review follow-ups (auth redesign)
-
-### 📚 Documentation
-
-- *(web)* Tool authorization redesign design doc + test adaptation
 
 ### ⚙️ Miscellaneous Tasks
 
@@ -261,33 +1101,6 @@
 - *(sqlite)* Guard fs_ops.delete_mode migration and never downgrade user_version
 - *(web)* Derive extension latest version from browser-extension/package.json
 
-### 💼 Other
-
-- Rename extension display name to EO2Weave
-- EO2Weave casing in extension README title
-- Use 怡氧知知 as the zh_CN display name
-- Move Supported Sites entry above the capability status line
-- Split dev and prod extension output directories
-- *(gateway)* Rename provider to Nutstore AI in English UI
-- *(extension)* V1.2.0
-- Remove legacy singular /workspace 308 redirect
-- Fix workspace writeFile classifying overwrites as create
-
-### 🚜 Refactor
-
-- *(agent)* Remove legacy workflow system
-- *(folder-access)* Replace dynamic imports with static
-- *(agent)* Simplify question card options
-- Remove scheduled task feature
-- *(settings)* Simplify extension management
-- *(webmcp)* Web app becomes read-only view of extension-managed authorization
-- *(webmcp)* Strip web settings page down to connection status
-- *(web)* Group settings dialog tabs into 5 labeled sections
-- *(web)* Move DeepSeek to first position in Chinese provider group
-- *(web)* Retire legacy client router, finish App Router migration
-- *(extension)* Switch imports to @creatorweave/shared
-- *(edit)* Make read-before-edit advisory and render failed edits clearly
-
 ### 📚 Documentation
 
 - Add CreatorWeave design system
@@ -309,6 +1122,21 @@
 - *(agent)* Improve prompt cache reuse
 - *(agent)* Remove duplicated tool prompt docs
 
+### 🚜 Refactor
+
+- *(agent)* Remove legacy workflow system
+- *(folder-access)* Replace dynamic imports with static
+- *(agent)* Simplify question card options
+- Remove scheduled task feature
+- *(settings)* Simplify extension management
+- *(webmcp)* Web app becomes read-only view of extension-managed authorization
+- *(webmcp)* Strip web settings page down to connection status
+- *(web)* Group settings dialog tabs into 5 labeled sections
+- *(web)* Move DeepSeek to first position in Chinese provider group
+- *(web)* Retire legacy client router, finish App Router migration
+- *(extension)* Switch imports to @creatorweave/shared
+- *(edit)* Make read-before-edit advisory and render failed edits clearly
+
 ### 🎨 Styling
 
 - *(agent)* Refine conversation controls
@@ -323,6 +1151,18 @@
 - *(status)* Trim STATUS.md to shipped-vs-pending
 - *(web)* Remove PWA install prompt component
 - 移动 edgeone.json 到 web 目录（Makers 部署配置随 web 构建目录）
+
+### 💼 Other
+
+- Rename extension display name to EO2Weave
+- EO2Weave casing in extension README title
+- Use 怡氧知知 as the zh_CN display name
+- Move Supported Sites entry above the capability status line
+- Split dev and prod extension output directories
+- *(gateway)* Rename provider to Nutstore AI in English UI
+- *(extension)* V1.2.0
+- Remove legacy singular /workspace 308 redirect
+- Fix workspace writeFile classifying overwrites as create
 ## [1.1.4] - 2026-08-03
 
 ### 🚀 Features
@@ -348,16 +1188,16 @@
 - *(web)* Distinguish export action icon
 - Bundle Monaco workers locally
 
+### 📚 Documentation
+
+- Document side panel notification limitation
+
 ### 🚜 Refactor
 
 - Remove legacy agent mode switch
 - Remove text-to-speech support
 - Remove default model editing
 - *(sync)* Simplify snapshot approval flow
-
-### 📚 Documentation
-
-- Document side panel notification limitation
 
 ### 🎨 Styling
 
@@ -403,13 +1243,13 @@
 
 - *(side-panel)* Offset floating button 8px from viewport edge
 
-### 💼 Other
-
-- *(extension)* V1.1.1
-
 ### 🚜 Refactor
 
 - *(topbar)* Collapse mobile actions into "new chat" + more menu
+
+### 💼 Other
+
+- *(extension)* V1.1.1
 ## [1.1.0] - 2026-07-14
 
 ### 💼 Other
@@ -1071,12 +1911,53 @@
 - *(typecheck)* Clear 10 pre-existing type errors
 - *(extension)* Sync side-panel toggle + scrub PII from comments
 
-### 💼 Other
+### 📚 Documentation
 
-- Preserve expanded directories when refreshing file tree
-- Convert migration progress messages to English
-- Add explicit /mnt path rewrite guidance for non-python tools
-- *(ui)* Show code in Python tool detail during execution and no-output states
+- Update project documentation and OPFS guide
+- *(i18n)* Update README with comprehensive documentation
+- Add BFOSA design specifications
+- Update README for SQLite OPFS storage migration
+- Add storage architecture documentation
+- Create design specification document
+- Update project documentation
+- Reorganize documentation structure
+- Refresh architecture overview and fix developer guides
+- Update product references and plugin style examples
+- Add DraftFS context note for future discussion
+- Update dev server URL to localhost:5173
+- Finalize open-source readiness details
+- Set English as default README and add Chinese README
+- Add LLM Wiki roadmap and unify README language layout
+- *(readme)* Add subagent item to roadmap
+- Add bilingual docs content and demo links
+- Add CreatorWeave motivation sections
+- Rewrite CONTRIBUTING.md with detailed contributor guide
+- Add attachment directory design and roadmap entry
+- Refine subagent API naming, timeout, and resume rules
+- *(spec)* Design single workspace conversation markdown export
+- *(spec)* Enrich conversation markdown export design
+- *(agent)* Clarify Python /mnt reads from OPFS, suggest sync tool on missing files
+- Add project skills documentation (zh + en)
+- Clarify python output path policy for workspace vs assets
+- Remove completed Attachment Directory from roadmap
+- Update CHANGELOG for v0.3.0
+- *(python)* Add CJK font and emoji limitation notes
+- *(bash-tool)* Document UTF-8 mojibake pitfall and cp/echo workarounds
+
+### ⚡ Performance
+
+- *(sync)* Move file scanning and change detection to Web Worker
+- *(conversation)* Reduce streaming re-renders in conversation view
+- *(python)* Load matplotlib only when code imports it
+- *(agent)* Memoize streaming markdown rendering components
+- *(sync)* Add batch discardPendingPaths to replace one-by-one loop
+- *(opfs)* Add ghost change dedup in writeFile with optimized content comparison
+- *(agent)* Virtualize conversation turns and fix step disappearing bug
+- *(agent)* Add memo comparison for AssistantStep and fix error extraction in FileReadRenderer
+- *(traversal)* Skip node_modules, .git and other common excluded directories
+- *(build)* Disable production sourcemaps and split large vendor chunks
+- *(webmcp)* Parallelize tab tool discovery scan
+- *(workspace)* Pure OPFS mode + skip redundant ensure loop in loadFromDB
 
 ### 🚜 Refactor
 
@@ -1238,54 +2119,6 @@
 - *(python)* Drop legacy file-injection path and dead code
 - *(extension)* Drop workspace-assistant mock provider
 
-### 📚 Documentation
-
-- Update project documentation and OPFS guide
-- *(i18n)* Update README with comprehensive documentation
-- Add BFOSA design specifications
-- Update README for SQLite OPFS storage migration
-- Add storage architecture documentation
-- Create design specification document
-- Update project documentation
-- Reorganize documentation structure
-- Refresh architecture overview and fix developer guides
-- Update product references and plugin style examples
-- Add DraftFS context note for future discussion
-- Update dev server URL to localhost:5173
-- Finalize open-source readiness details
-- Set English as default README and add Chinese README
-- Add LLM Wiki roadmap and unify README language layout
-- *(readme)* Add subagent item to roadmap
-- Add bilingual docs content and demo links
-- Add CreatorWeave motivation sections
-- Rewrite CONTRIBUTING.md with detailed contributor guide
-- Add attachment directory design and roadmap entry
-- Refine subagent API naming, timeout, and resume rules
-- *(spec)* Design single workspace conversation markdown export
-- *(spec)* Enrich conversation markdown export design
-- *(agent)* Clarify Python /mnt reads from OPFS, suggest sync tool on missing files
-- Add project skills documentation (zh + en)
-- Clarify python output path policy for workspace vs assets
-- Remove completed Attachment Directory from roadmap
-- Update CHANGELOG for v0.3.0
-- *(python)* Add CJK font and emoji limitation notes
-- *(bash-tool)* Document UTF-8 mojibake pitfall and cp/echo workarounds
-
-### ⚡ Performance
-
-- *(sync)* Move file scanning and change detection to Web Worker
-- *(conversation)* Reduce streaming re-renders in conversation view
-- *(python)* Load matplotlib only when code imports it
-- *(agent)* Memoize streaming markdown rendering components
-- *(sync)* Add batch discardPendingPaths to replace one-by-one loop
-- *(opfs)* Add ghost change dedup in writeFile with optimized content comparison
-- *(agent)* Virtualize conversation turns and fix step disappearing bug
-- *(agent)* Add memo comparison for AssistantStep and fix error extraction in FileReadRenderer
-- *(traversal)* Skip node_modules, .git and other common excluded directories
-- *(build)* Disable production sourcemaps and split large vendor chunks
-- *(webmcp)* Parallelize tab tool discovery scan
-- *(workspace)* Pure OPFS mode + skip redundant ensure loop in loadFromDB
-
 ### 🎨 Styling
 
 - *(web)* Adjust input left padding for better alignment
@@ -1354,3 +2187,10 @@
 ### ◀️ Revert
 
 - Remove virtual list rendering, keep other improvements
+
+### 💼 Other
+
+- Preserve expanded directories when refreshing file tree
+- Convert migration progress messages to English
+- Add explicit /mnt path rewrite guidance for non-python tools
+- *(ui)* Show code in Python tool detail during execution and no-output states
