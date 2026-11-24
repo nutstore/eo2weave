@@ -1,4 +1,4 @@
-import { installWebMCP } from '@mcp-b/webmcp-polyfill'
+import { installWebMCP } from '@w3c/webmcp-polyfill'
 
 export interface PageTool {
   name: string

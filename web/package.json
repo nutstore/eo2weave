@@ -42,7 +42,7 @@
     "@earendil-works/pi-agent-core": "^0.78.0",
     "@earendil-works/pi-ai": "^0.78.0",
     "@iconify/react": "^6.0.2",
-    "@mcp-b/webmcp-polyfill": "6.0.0",
+    "@w3c/webmcp-polyfill": "^0.2.0",
     "@mertdeveci55/univer-import-export": "^0.2.1",
     "@modelcontextprotocol/client": "2.4.0",
     "@modelcontextprotocol/ext-tasks": "0.2.2",

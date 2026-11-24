@@ -25,7 +25,7 @@ const harness = vi.hoisted(() => ({
 
 const noStore = () => ({ getState: () => ({}) })
 
-vi.mock('@mcp-b/webmcp-polyfill', () => ({ installWebMCP: vi.fn() }))
+vi.mock('@w3c/webmcp-polyfill', () => ({ installWebMCP: vi.fn() }))
 vi.mock('@/store/conversation.store', () => ({ useConversationStore: noStore() }))
 vi.mock('@/store/settings.store', () => ({ useSettingsStore: noStore() }))
 vi.mock('@/store/agent.store', () => ({ useAgentStore: noStore() }))

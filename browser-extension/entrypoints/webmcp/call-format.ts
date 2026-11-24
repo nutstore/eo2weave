@@ -15,7 +15,7 @@
 //
 // Contract matrix (evidence: PR #80 audit, commits 852cf921 and
 // upstream/pr38 5bf782b7):
-//   - v6 polyfill (@mcp-b/webmcp-polyfill@6): object input, object
+//   - polyfill (@w3c/webmcp-polyfill, installWebMCP()): object input, object
 //     schemas, sets NO marker.
 //   - legacy v4 polyfill: serialized JSON input, string schemas,
 //     sets __isWebMCPPolyfill === true on install.

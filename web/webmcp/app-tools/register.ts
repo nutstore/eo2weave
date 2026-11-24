@@ -12,7 +12,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 // document.modelContext is a runtime-injected API (native Chrome 140+ or the
 // @mcp-b polyfill) — its shape can't be imported statically, hence the casts.
-import { installWebMCP } from '@mcp-b/webmcp-polyfill'
+import { installWebMCP } from '@w3c/webmcp-polyfill'
 import { APP_TOOLS } from './schemas'
 import { buildToolExecutors, initAppToolDeps } from './handlers'
 

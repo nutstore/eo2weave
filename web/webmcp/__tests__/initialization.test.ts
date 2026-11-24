@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const installWebMCP = vi.hoisted(() => vi.fn())
-vi.mock('@mcp-b/webmcp-polyfill', () => ({ installWebMCP }))
+vi.mock('@w3c/webmcp-polyfill', () => ({ installWebMCP }))
 vi.mock('@/store/conversation.store', () => {
   expect(installWebMCP).toHaveBeenCalledTimes(1)
   return { get useConversationStore() { throw new Error('Dependency loading reached') } }
