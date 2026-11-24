@@ -164,6 +164,8 @@ export const agent = {
     toolStatus: {
         running: "运行中…",
         reading: "读取中…",
+        searchExpandSameLine: "没有其它行 — 其余匹配都在上面这一行里。",
+        searchExpandNoBackend: "无法加载更多匹配 — 该路径没有可用的文件访问权限。",
         loadingLargeResultSet: "正在加载大量结果…",
         stateRunning: "运行中",
         stateStarting: "启动中（端口尚未就绪）",

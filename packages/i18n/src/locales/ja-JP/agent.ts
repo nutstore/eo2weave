@@ -166,6 +166,8 @@ export const agent = {
     toolStatus: {
         running: "実行中…",
         reading: "読み込み中…",
+        searchExpandSameLine: "他の行はありません — 残りの一致は上の行にあります。",
+        searchExpandNoBackend: "これ以上の一致を読み込めません — このパスにファイルアクセスできません。",
         loadingLargeResultSet: "大量の結果を読み込み中…",
         stateRunning: "実行中",
         stateStarting: "起動中（ポート未応答）",

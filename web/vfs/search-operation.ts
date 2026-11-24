@@ -347,6 +347,133 @@ async function searchNativeHostRoots(
   return result
 }
 
+// ---------------------------------------------------------------------------
+// Single-file hit lookup (UI drill-down)
+// ---------------------------------------------------------------------------
+
+/** Options for re-running a search against a single file. */
+export interface FileSearchHitsOptions {
+  query: string
+  regex?: boolean
+  caseSensitive?: boolean
+  wholeWord?: boolean
+  maxResults?: number
+  contextLines?: number
+  deadlineMs?: number
+}
+
+/** Backend routing context for {@link lookupFileSearchHits}. */
+export interface FileSearchHitsContext {
+  /** Conversation/workspace id — required for native-host roots. */
+  workspaceId?: string | null
+  /** Project id hint; resolved from the workspace when omitted. */
+  projectId?: string | null
+  /** Last-resort handle (OPFS-only workspaces have no project_roots rows). */
+  directoryHandle?: FileSystemDirectoryHandle | null
+}
+
+/**
+ * Resolve the project that owns a workspace (conversation).
+ *
+ * Deliberately not `useProjectStore.getState().activeProjectId`: the global
+ * active-project pointer can point at a different project than the one the
+ * viewed conversation belongs to (switching tabs/workspaces while a
+ * transcript is open), which would route the lookup to the wrong root registry.
+ */
+async function resolveWorkspaceProjectId(workspaceId: string): Promise<string | null> {
+  try {
+    const { getWorkspaceRepository } = await import('@/sqlite/repositories/workspace.repository')
+    const workspace = await getWorkspaceRepository().findWorkspaceById(workspaceId)
+    return workspace?.projectId ?? null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Re-run a search restricted to a single file, so a transcript can reveal the
+ * hits that were compacted out of the tool result.
+ *
+ * Mirrors `searchExecutor`'s backend routing instead of assuming a
+ * FileSystemDirectoryHandle: native-host roots deliberately expose no handle,
+ * so they are scanned/read through WorkspaceRuntime. Returns null when no
+ * backend can be reached for the path (the caller shows a hint instead of
+ * guessing).
+ */
+export async function lookupFileSearchHits(
+  filePath: string,
+  options: FileSearchHitsOptions,
+  context: FileSearchHitsContext = {}
+): Promise<SearchHit[] | null> {
+  const normalized = String(filePath ?? '').replace(/\\/g, '/').replace(/^\/+/, '')
+  if (!normalized) return null
+
+  const maxResults = Math.max(1, options.maxResults ?? 50)
+  const contextLines = Math.max(0, options.contextLines ?? 0)
+  const deadlineMs = Math.max(1000, options.deadlineMs ?? 15000)
+  const workspaceId = context.workspaceId ?? null
+  // workspace → project is authoritative; the caller's hint only fills the gap
+  // when the workspace row is unreachable (e.g. sqlite not ready yet).
+  const projectId =
+    (workspaceId ? await resolveWorkspaceProjectId(workspaceId) : null) ?? context.projectId ?? null
+
+  // ① Native-host root: no directory handle exists, search the disk directly.
+  if (workspaceId && projectId) {
+    const nativeResult = await searchNativeHostRoots({ workspaceId, projectId }, normalized, {
+      query: options.query,
+      regex: options.regex === true,
+      caseSensitive: options.caseSensitive === true,
+      wholeWord: options.wholeWord === true,
+      maxResults,
+      contextLines,
+      deadlineMs,
+      maxFileSize: 4 * 1024 * 1024,
+      includeIgnored: false,
+      excludeDirs: [],
+    })
+    // null = this path is not under a native-host root; fall through.
+    if (nativeResult) return nativeResult.results
+  }
+
+  // ② Every other backend goes through the search worker with a root handle.
+  let directoryHandle: FileSystemDirectoryHandle | null = null
+  let subPath = normalized
+  let rootName = ''
+
+  try {
+    const manager = await getWorkspaceManager()
+    const workspace = workspaceId ? await manager.getWorkspace(workspaceId) : null
+    if (workspace) {
+      const resolved = await workspace.resolvePath(normalized, projectId)
+      rootName = resolved.rootName
+      subPath = resolved.relativePath || normalized
+      directoryHandle = await workspace.getNativeDirectoryHandleForPath(normalized, projectId)
+    }
+  } catch {
+    // Unresolved/ambiguous path — fall back to the caller-provided handle.
+  }
+
+  if (!directoryHandle) directoryHandle = context.directoryHandle ?? null
+  if (!directoryHandle) return null
+
+  // Keep results consistent with the read tool: OPFS pending edits win over disk.
+  const overlays = await collectPendingOverlays(workspaceId, projectId)
+  const scopedOverlays = rootName ? stripOverlayRootPrefix(overlays, rootName) : overlays
+
+  const result = await getSearchWorkerManager().searchInDirectory(directoryHandle, {
+    query: options.query,
+    path: subPath,
+    regex: options.regex === true,
+    caseSensitive: options.caseSensitive === true,
+    wholeWord: options.wholeWord === true,
+    maxResults,
+    contextLines,
+    deadlineMs,
+    pendingOverlays: Object.keys(scopedOverlays).length > 0 ? scopedOverlays : undefined,
+  })
+  return result.results
+}
+
 /**
  * Collect pending file overlays from OPFS for the current workspace.
  * This ensures search results are consistent with the read tool,
