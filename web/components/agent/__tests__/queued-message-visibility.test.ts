@@ -1,40 +1,43 @@
 import { describe, expect, it } from 'vitest'
 import { createUserMessage } from '@/agent/message-types'
-import { visibleQueuedEntries } from '../queued-message-visibility'
+import {
+  hideQueuedTranscriptMessages,
+  pendingQueuedMessageIds,
+} from '@/components/agent/queued-message-visibility'
 import type { QueuedMessage } from '@/store/conversation-runtime.store'
 
-function queue(...entries: QueuedMessage[]): QueuedMessage[] {
-  return entries
-}
-
-describe('visibleQueuedEntries', () => {
-  it('hides a card whose persisted prompt is already a transcript bubble', () => {
+describe('pendingQueuedMessageIds', () => {
+  it('collects only the entries that own a persisted record', () => {
     const persisted = createUserMessage('app-tool prompt')
-    const entries = queue(
+    const entries: QueuedMessage[] = [
       { text: 'app-tool prompt', enqueuedAt: 1, persistedMessage: persisted },
       { text: 'typed while busy', enqueuedAt: 2 },
-    )
-    expect(visibleQueuedEntries(entries, new Set([persisted.id]))).toEqual([
-      { index: 1, message: entries[1] },
-    ])
+    ]
+    expect([...pendingQueuedMessageIds(entries)]).toEqual([persisted.id])
+  })
+})
+
+describe('hideQueuedTranscriptMessages', () => {
+  it('hides the bubble of a prompt that is still queued, keeping its card', () => {
+    const persisted = createUserMessage('app-tool prompt')
+    const earlier = createUserMessage('earlier turn')
+    const queued: QueuedMessage[] = [
+      { text: 'app-tool prompt', enqueuedAt: 1, persistedMessage: persisted },
+      { text: 'typed while busy', enqueuedAt: 2 },
+    ]
+
+    expect(hideQueuedTranscriptMessages([earlier, persisted], queued)).toEqual([earlier])
   })
 
-  it('keeps the queue index of the surviving entries (no renumbering)', () => {
-    const first = createUserMessage('one')
-    const third = createUserMessage('three')
-    const entries = queue(
-      { text: 'one', enqueuedAt: 1, persistedMessage: first },
-      { text: 'two', enqueuedAt: 2 },
-      { text: 'three', enqueuedAt: 3, persistedMessage: third },
-    )
-    expect(visibleQueuedEntries(entries, new Set([first.id, third.id]))).toEqual([
-      { index: 1, message: entries[1] },
-    ])
+  it('shows the bubble again once the entry leaves the queue', () => {
+    const persisted = createUserMessage('app-tool prompt')
+    expect(hideQueuedTranscriptMessages([persisted], [])).toEqual([persisted])
   })
 
-  it('shows every entry when the transcript holds none of them', () => {
-    const persisted = createUserMessage('pending')
-    const entries = queue({ text: 'pending', enqueuedAt: 1, persistedMessage: persisted })
-    expect(visibleQueuedEntries(entries, new Set())).toEqual([{ index: 0, message: entries[0] }])
+  it('returns the same array instance when the queue owns nothing in the transcript', () => {
+    const messages = [createUserMessage('hello')]
+    const queued: QueuedMessage[] = [{ text: 'typed while busy', enqueuedAt: 1 }]
+
+    expect(hideQueuedTranscriptMessages(messages, queued)).toBe(messages)
   })
 })

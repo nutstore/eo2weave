@@ -19,7 +19,7 @@ import type { VirtualAtBottomListener, VirtualAtBottomHub } from '@/components/a
 import { groupMessagesIntoTurns } from './group-messages'
 import type { Turn } from './group-messages'
 import { QueuedMessageCard } from './QueuedMessageCard'
-import { visibleQueuedEntries, type VisibleQueuedEntry } from './queued-message-visibility'
+import { hideQueuedTranscriptMessages } from './queued-message-visibility'
 import { Clock } from 'lucide-react'
 import { useT } from '@/i18n'
 import type { DraftAssistantStep, Message, ToolCall } from '@/agent/message-types'
@@ -200,8 +200,7 @@ type ConversationFooterProps = {
   toolResults: Map<string, string>
   conversationId?: string | null
   isProcessing: boolean
-  /** Queue entries to render — already filtered against the transcript. */
-  queuedMessages: VisibleQueuedEntry[]
+  queuedMessages: { text: string; assets?: unknown[]; enqueuedAt: number }[]
   mentionAgents: { id: string; name?: string }[]
   onSearchFiles?: (query: string) => Promise<FileMentionItem[]>
   /** Open the shared FilePreview drawer with a pre-loaded blob (queued attachments) */
@@ -247,15 +246,15 @@ function ConversationFooterInner({
             <span>{t('conversation.queue.divider', { count: queuedMessages.length })}</span>
             <div className="h-px flex-1 bg-primary-200 dark:bg-primary-800" />
           </div>
-          {/* Queued message cards */}
-          {queuedMessages.map(({ index, message }) => (
+          {/* Queued message cards — the card owns a pending prompt's actions */}
+          {queuedMessages.map((msg, idx) => (
             <QueuedMessageCard
-              key={`queued-${index}-${message.enqueuedAt}`}
+              key={`queued-${idx}-${msg.enqueuedAt}`}
               conversationId={conversationId ?? ''}
-              index={index}
+              index={idx}
               total={queuedMessages.length}
-              text={message.text}
-              assets={message.assets as never}
+              text={msg.text}
+              assets={msg.assets as never}
               mentionAgents={mentionAgents}
               onSearchFiles={onSearchFiles}
               onPreviewAsset={onPreviewAsset}
@@ -519,18 +518,16 @@ export const ConversationMessages = memo(forwardRef(function ConversationMessage
       return s.pendingMessageQueues.get(conversationId) ?? []
     }),
   )
-  // An app-tool prompt is already persisted into the transcript at enqueue
-  // time, so its bubble is on screen; rendering the queue card too would show
-  // the same prompt twice. Entries without a persisted record (UI sends) stay
-  // memory-only and keep their card.
-  const visibleQueued = useMemo(
-    () => (queuedMessages.length
-      ? visibleQueuedEntries(queuedMessages, new Set(activeMessages.map((message) => message.id)))
-      : []),
-    [queuedMessages, activeMessages],
+  // An app-tool prompt is persisted into the transcript at enqueue time, so
+  // rendering its bubble next to the queue card shows the same prompt twice.
+  // The CARD is the surface that stays: it carries the queue-specific
+  // edit/remove/move actions, while the bubble's own edit/delete actions are
+  // disabled during a run. Entries without a persisted record (UI sends) are
+  // memory-only and own no transcript bubble.
+  const turns = useMemo(
+    () => groupMessagesIntoTurns(hideQueuedTranscriptMessages(activeMessages, queuedMessages)),
+    [activeMessages, queuedMessages],
   )
-
-  const turns = useMemo(() => groupMessagesIntoTurns(activeMessages), [activeMessages])
   const lastTurn = turns[turns.length - 1]
 
   // ── Virtualization (only above VIRTUALIZATION_THRESHOLD messages) ──
@@ -596,10 +593,10 @@ export const ConversationMessages = memo(forwardRef(function ConversationMessage
   }, [isProcessing])
   // Queue length is read from inside the interval callback, which cannot
   // depend on render state without re-arming the loop on every enqueue.
-  const queuedCountRef = useRef(visibleQueued.length)
+  const queuedCountRef = useRef(queuedMessages.length)
   useEffect(() => {
-    queuedCountRef.current = visibleQueued.length
-  }, [visibleQueued.length])
+    queuedCountRef.current = queuedMessages.length
+  }, [queuedMessages.length])
   // Explicit re-arms (the scroll-to-bottom button during a run). A counter, not
   // a boolean: every click must restart the loop, not just the first one.
   const [pinRearmRequest, setPinRearmRequest] = useState(0)
@@ -969,7 +966,7 @@ export const ConversationMessages = memo(forwardRef(function ConversationMessage
       toolResults={toolResults}
       conversationId={conversationId}
       isProcessing={isProcessing}
-      queuedMessages={visibleQueued}
+      queuedMessages={queuedMessages}
       mentionAgents={mentionAgents}
       onSearchFiles={onSearchFiles}
       onPreviewAsset={onPreviewAsset}
