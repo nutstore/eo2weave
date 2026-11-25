@@ -20,6 +20,7 @@ import { inferMimeType } from '@/types/asset'
 import { readAssetBlob } from './asset-utils'
 import { writePendingAssetsToOPFS } from '@/services/asset.service'
 import { useWorkspaceStore } from '@/store/workspace.store'
+import { useConversationRuntimeStore } from '@/store/conversation-runtime.store'
 import { toast } from 'sonner'
 
 interface QueuedMessageCardProps {
@@ -27,6 +28,12 @@ interface QueuedMessageCardProps {
   conversationId: string
   /** Index of this message in the queue (0-based, 0 = next to be sent) */
   index: number
+  /**
+   * Enqueue timestamp — the entry's identity in the queue. The edit path awaits
+   * an upload, so a concurrent move/remove can invalidate `index`; resolving the
+   * entry by this stamp keeps the edit on the prompt the user actually opened.
+   */
+  enqueuedAt?: number
   /** Total number of queued messages */
   total: number
   /** Message text */
@@ -190,6 +197,7 @@ function QueuedAssetThumbnail({
 export function QueuedMessageCard({
   conversationId,
   index,
+  enqueuedAt,
   total,
   text,
   assets,
@@ -206,6 +214,17 @@ export function QueuedMessageCard({
 
   const handleStartEdit = useCallback(() => setIsEditing(true), [])
   const handleCancelEdit = useCallback(() => setIsEditing(false), [])
+
+  /**
+   * Current index of THIS entry, or null when it left the queue while an async
+   * step of the edit (workspace switch, attachment upload) was in flight.
+   */
+  const resolveQueueIndex = useCallback((): number | null => {
+    if (enqueuedAt === undefined) return index
+    const queue = useConversationRuntimeStore.getState().pendingMessageQueues.get(conversationId)
+    const current = queue?.findIndex((entry) => entry.enqueuedAt === enqueuedAt) ?? -1
+    return current >= 0 ? current : null
+  }, [conversationId, enqueuedAt, index])
 
   const handleSubmitEdit = useCallback(
     async (newText: string, files: File[]) => {
@@ -229,7 +248,13 @@ export function QueuedMessageCard({
           return false
         }
       }
-      onUpdate(index, {
+      const currentIndex = resolveQueueIndex()
+      if (currentIndex === null) {
+        // The prompt left the queue while the async step ran — nothing to edit.
+        setIsEditing(false)
+        return true
+      }
+      onUpdate(currentIndex, {
         text: trimmed,
         assets: addedAssets.length > 0 ? [...(assets ?? []), ...addedAssets] : undefined,
       })

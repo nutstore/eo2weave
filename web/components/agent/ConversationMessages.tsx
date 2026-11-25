@@ -199,7 +199,6 @@ type ConversationFooterProps = {
   draftRuntimeProps: ReturnType<typeof getRuntimeProps>
   toolResults: Map<string, string>
   conversationId?: string | null
-  isProcessing: boolean
   queuedMessages: { text: string; assets?: unknown[]; enqueuedAt: number }[]
   mentionAgents: { id: string; name?: string }[]
   onSearchFiles?: (query: string) => Promise<FileMentionItem[]>
@@ -214,7 +213,6 @@ function ConversationFooterInner({
   draftRuntimeProps,
   toolResults,
   conversationId,
-  isProcessing,
   queuedMessages,
   mentionAgents,
   onSearchFiles,
@@ -237,8 +235,10 @@ function ConversationFooterInner({
         />
       )}
 
-      {/* Queued messages — shown while agent is processing */}
-      {isProcessing && queuedMessages.length > 0 && (
+      {/* Queued messages — rendered whenever prompts wait for delivery, so a
+          prompt that outlives a run (an error keeps it for a retry) still has
+          its edit/remove/move controls */}
+      {queuedMessages.length > 0 && (
         <div className="space-y-2">
           {/* Queue divider */}
           <div className="flex items-center gap-2 text-xs text-primary-500 dark:text-primary-400">
@@ -252,6 +252,7 @@ function ConversationFooterInner({
               key={`queued-${idx}-${msg.enqueuedAt}`}
               conversationId={conversationId ?? ''}
               index={idx}
+              enqueuedAt={msg.enqueuedAt}
               total={queuedMessages.length}
               text={msg.text}
               assets={msg.assets as never}
@@ -520,14 +521,13 @@ export const ConversationMessages = memo(forwardRef(function ConversationMessage
   )
   // An app-tool prompt is persisted into the transcript at enqueue time, so
   // rendering its bubble next to the queue card shows the same prompt twice.
-  // The CARD is the surface that stays: it carries the queue-specific
-  // edit/remove/move actions, while the bubble's own edit/delete actions are
-  // disabled during a run. Entries without a persisted record (UI sends) are
-  // memory-only and own no transcript bubble. Cards render only while a run is
-  // processing, so the bubble must come back otherwise (idle / errored run).
+  // The CARD is the surface that stays — it carries the queue-specific
+  // edit/remove/move actions and renders whenever the queue is non-empty — so
+  // the bubble stays hidden for as long as the entry is queued. Entries
+  // without a persisted record (UI sends) are memory-only and own no bubble.
   const turns = useMemo(
-    () => groupMessagesIntoTurns(visibleTranscriptMessages(activeMessages, queuedMessages, isProcessing)),
-    [activeMessages, queuedMessages, isProcessing],
+    () => groupMessagesIntoTurns(visibleTranscriptMessages(activeMessages, queuedMessages)),
+    [activeMessages, queuedMessages],
   )
   const lastTurn = turns[turns.length - 1]
 
@@ -966,7 +966,6 @@ export const ConversationMessages = memo(forwardRef(function ConversationMessage
       draftRuntimeProps={draftRuntimeProps}
       toolResults={toolResults}
       conversationId={conversationId}
-      isProcessing={isProcessing}
       queuedMessages={queuedMessages}
       mentionAgents={mentionAgents}
       onSearchFiles={onSearchFiles}

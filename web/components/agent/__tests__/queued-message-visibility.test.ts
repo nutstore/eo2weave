@@ -44,18 +44,25 @@ describe('hideQueuedTranscriptMessages', () => {
 })
 
 describe('visibleTranscriptMessages', () => {
-  it('hides a queued prompt bubble only while the queue cards render', () => {
+  it('hides a queued prompt bubble for as long as the entry stays queued', () => {
     const persisted = createUserMessage('app-tool prompt')
     const queued: QueuedMessage[] = [{ text: 'app-tool prompt', enqueuedAt: 1, persistedMessage: persisted }]
 
-    expect(visibleTranscriptMessages([persisted], queued, true)).toEqual([])
-    expect(visibleTranscriptMessages([persisted], queued, false)).toEqual([persisted])
+    // No processing flag: the card renders whenever the queue is non-empty, so
+    // the bubble must stay hidden at idle too (an idle queue would otherwise
+    // offer a delete that only drops the transcript row, not the delivery).
+    expect(visibleTranscriptMessages([persisted], queued)).toEqual([])
   })
 
-  it('returns the same array instance when no cards are on screen', () => {
+  it('returns the same array instance when nothing is queued', () => {
     const messages = [createUserMessage('hello')]
-    const queued: QueuedMessage[] = [{ text: 'hello', enqueuedAt: 1, persistedMessage: messages[0] }]
 
-    expect(visibleTranscriptMessages(messages, queued, false)).toBe(messages)
+    expect(visibleTranscriptMessages(messages, [])).toBe(messages)
+  })
+
+  it('restores the bubble once the entry leaves the queue', () => {
+    const persisted = createUserMessage('app-tool prompt')
+
+    expect(visibleTranscriptMessages([persisted], [])).toEqual([persisted])
   })
 })
