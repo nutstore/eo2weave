@@ -30,6 +30,7 @@ import { useWorkspacePreferencesStore } from '@/store/workspace-preferences.stor
 import { emitCompressionEvent } from '@/streaming-bus'
 import { useConversationContextStore } from './conversation-context.store'
 import { useConversationRuntimeStore, createEmptyRuntime } from './conversation-runtime.store'
+import { setQueuedMessageMirror } from './queued-message-mirror-slot'
 import { deleteAgentLoop, getAgentLoop, setAgentLoop } from './agent-loop-registry'
 import { deleteStreamingQueues, getStreamingQueues } from './streaming-queue-registry'
 import { applyDraftAssistantEvent, createEmptyDraftAssistant } from './draft-assistant'
@@ -2643,4 +2644,30 @@ useConversationRuntimeStore.subscribe((state, prev) => {
       scheduleConversationEviction(id)
     }
   }
+})
+
+// ---------------------------------------------------------------------------
+// Queued-prompt transcript mirror
+// ---------------------------------------------------------------------------
+// App-tool prompts are appended to the transcript when they are queued (the
+// row has to be part of the snapshot, or `doPersist` deletes it). Editing or
+// discarding one therefore has to rewrite the transcript too: a queue-only
+// removal left the row behind (a refresh resurrected the prompt) and a
+// queue-only edit was dropped (the dequeue consumer ran the stale text).
+setQueuedMessageMirror({
+  remove: (conversationId, messageId) => {
+    const store = useConversationStoreSQLite.getState()
+    const messages = store.conversations.find((c) => c.id === conversationId)?.messages
+    if (!messages?.some((message) => message.id === messageId)) return
+    store.updateMessages(conversationId, messages.filter((message) => message.id !== messageId))
+  },
+  replace: (conversationId, message) => {
+    const store = useConversationStoreSQLite.getState()
+    const messages = store.conversations.find((c) => c.id === conversationId)?.messages
+    if (!messages?.some((existing) => existing.id === message.id)) return
+    store.updateMessages(
+      conversationId,
+      messages.map((existing) => (existing.id === message.id ? message : existing)),
+    )
+  },
 })

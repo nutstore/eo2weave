@@ -23,6 +23,7 @@ import type {
   Message,
 } from '@/agent/message-types'
 import type { AssetMeta } from '@/types/asset'
+import { queuedMessageMirror } from './queued-message-mirror-slot'
 
 /** A message waiting in the per-conversation queue */
 export interface QueuedMessage {
@@ -490,6 +491,7 @@ export const useConversationRuntimeStore = create<ConversationRuntimeState>()(
     },
 
     removeQueuedMessage: (convId: string, index: number) => {
+      const removed = get().pendingMessageQueues.get(convId)?.[index]
       set((state) => {
         const q = state.pendingMessageQueues.get(convId)
         if (q && index >= 0 && index < q.length) {
@@ -499,9 +501,12 @@ export const useConversationRuntimeStore = create<ConversationRuntimeState>()(
           }
         }
       })
+      const messageId = removed?.persistedMessage?.id
+      if (messageId) queuedMessageMirror()?.remove(convId, messageId)
     },
 
     updateQueuedMessage: (convId, index, patch) => {
+      const persisted = get().pendingMessageQueues.get(convId)?.[index]?.persistedMessage
       set((state) => {
         const q = state.pendingMessageQueues.get(convId)
         if (q && index >= 0 && index < q.length) {
@@ -509,6 +514,13 @@ export const useConversationRuntimeStore = create<ConversationRuntimeState>()(
           if (patch.assets !== undefined) q[index].assets = patch.assets
         }
       })
+      if (persisted) {
+        queuedMessageMirror()?.replace(convId, {
+          ...persisted,
+          content: patch.text ?? persisted.content,
+          assets: patch.assets ?? persisted.assets,
+        })
+      }
     },
 
     moveQueuedMessage: (convId, fromIndex, toIndex) => {

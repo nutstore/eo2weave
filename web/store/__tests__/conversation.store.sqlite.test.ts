@@ -2446,3 +2446,58 @@ describe('conversation.store.sqlite tool-call routing', () => {
     })
   })
 })
+
+describe('queued-prompt transcript mirror', () => {
+  beforeEach(() => {
+    messageRepoInsertMock.mockReset()
+    messageRepoInsertMock.mockResolvedValue(undefined)
+    messageRepoReplaceAllMock.mockReset()
+    messageRepoReplaceAllMock.mockResolvedValue(undefined)
+    conversationRepoSaveMetaMock.mockReset()
+    conversationRepoSaveMetaMock.mockResolvedValue(undefined)
+    useConversationRuntimeStore.setState({ pendingMessageQueues: new Map(), runtimes: new Map() })
+    useConversationStore.setState({
+      conversations: [],
+      activeConversationId: null,
+      loaded: true,
+      suggestedFollowUps: new Map(),
+      cancelledRunIds: new Set(),
+      mountedConversations: new Map(),
+    } as any)
+  })
+
+  function seedQueue(queued: ReturnType<typeof createUserMessage>, other = createUserMessage('keep me')) {
+    const conv = useConversationStore.getState().createNew('queue-mirror', { activate: false })
+    useConversationStore.getState().updateMessages(conv.id, [other, queued])
+    useConversationRuntimeStore.getState().enqueueMessage(conv.id, {
+      text: queued.content ?? '',
+      enqueuedAt: 1,
+      persistedMessage: queued,
+    })
+    const messages = () =>
+      useConversationStore.getState().conversations.find((c) => c.id === conv.id)?.messages ?? []
+    return { conv, other, messages }
+  }
+
+  it('drops the transcript record when a queued app-tool prompt is discarded', () => {
+    const queued = createUserMessage('queued prompt')
+    const { conv, other, messages } = seedQueue(queued)
+
+    useConversationRuntimeStore.getState().removeQueuedMessage(conv.id, 0)
+
+    expect(useConversationRuntimeStore.getState().getQueueDepth(conv.id)).toBe(0)
+    expect(messages().map((message) => message.id)).toEqual([other.id])
+  })
+
+  it('mirrors a queue edit into the transcript record', () => {
+    const queued = createUserMessage('enqueue-time text')
+    const { conv, messages } = seedQueue(queued)
+
+    useConversationRuntimeStore.getState().updateQueuedMessage(conv.id, 0, { text: 'edited text' })
+
+    expect(useConversationRuntimeStore.getState().getQueuedMessage(conv.id, 0)?.text).toBe('edited text')
+    const mirrored = messages().find((message) => message.id === queued.id)
+    expect(mirrored?.content).toBe('edited text')
+    expect(mirrored?.timestamp).toBe(queued.timestamp)
+  })
+})
