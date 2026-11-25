@@ -2500,4 +2500,52 @@ describe('queued-prompt transcript mirror', () => {
     expect(mirrored?.content).toBe('edited text')
     expect(mirrored?.timestamp).toBe(queued.timestamp)
   })
+
+  it('re-derives the auto title when the discarded prompt was the first user message', () => {
+    const queued = createUserMessage('queued first prompt')
+    const conv = useConversationStore.getState().createNew(undefined, { activate: false })
+    useConversationStore.getState().updateMessages(conv.id, [queued])
+    useConversationRuntimeStore.getState().enqueueMessage(conv.id, {
+      text: 'queued first prompt',
+      enqueuedAt: 1,
+      persistedMessage: queued,
+    })
+    const conversation = () => useConversationStore.getState().conversations.find((c) => c.id === conv.id)
+    expect(conversation()?.title).toBe('queued first prompt')
+
+    useConversationRuntimeStore.getState().removeQueuedMessage(conv.id, 0)
+
+    // The transcript now has no user message left, so the auto title falls back
+    // to the default name instead of keeping the discarded prompt's text.
+    expect(conversation()?.messages).toEqual([])
+    expect(conversation()?.title).toBe('New Chat')
+  })
+
+  it('applies a removal to an evicted conversation whose transcript is only in SQLite', async () => {
+    const queued = createUserMessage('queued prompt')
+    const earlier = createUserMessage('earlier turn')
+    const conv = useConversationStore.getState().createNew('queue-mirror', { activate: false })
+    useConversationStore.getState().updateMessages(conv.id, [earlier, queued])
+    useConversationRuntimeStore.getState().enqueueMessage(conv.id, {
+      text: 'queued prompt',
+      enqueuedAt: 1,
+      persistedMessage: queued,
+    })
+    // Evicted between enqueue and discard: the row exists only in SQLite.
+    useConversationStore.setState((state) => {
+      const target = state.conversations.find((c) => c.id === conv.id)
+      if (target) {
+        target.messages = []
+        target.messagesLoaded = false
+      }
+    })
+    messageRepoFindMock.mockResolvedValue([earlier, queued])
+
+    useConversationRuntimeStore.getState().removeQueuedMessage(conv.id, 0)
+
+    await vi.waitFor(() => {
+      const messages = useConversationStore.getState().conversations.find((c) => c.id === conv.id)?.messages ?? []
+      expect(messages.map((message) => message.id)).toEqual([earlier.id])
+    })
+  })
 })

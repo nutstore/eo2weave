@@ -2654,20 +2654,62 @@ useConversationRuntimeStore.subscribe((state, prev) => {
 // discarding one therefore has to rewrite the transcript too: a queue-only
 // removal left the row behind (a refresh resurrected the prompt) and a
 // queue-only edit was dropped (the dequeue consumer ran the stale text).
+//
+// A conversation can be metadata-only (`messagesLoaded: false`) or evicted
+// while its prompt still waits in the queue, so a mirror write goes through
+// the guarded reload path instead of no-opping on an empty in-memory fragment.
+function applyQueuedMirrorWrite(conversationId: string, apply: () => void): void {
+  const conv = useConversationStoreSQLite.getState().conversations.find((c) => c.id === conversationId)
+  if (conv && conv.messagesLoaded !== false) {
+    apply()
+    return
+  }
+  writeWithMessagesLoaded(conversationId, apply)
+}
+
+/**
+ * A queued prompt can be the FIRST user message, which is what an auto title is
+ * derived from — and `updateMessages` only derives a title on the 0→1
+ * transition. Re-derive it here, the same way the message-delete paths do;
+ * manual/LLM-confirmed titles are left untouched.
+ */
+function syncQueuedMirrorTitle(conversationId: string): void {
+  let titleChanged = false
+  useConversationStoreSQLite.setState((state) => {
+    const conv = state.conversations.find((c) => c.id === conversationId)
+    if (!conv || conv.titleMode !== 'auto') return
+    const before = conv.title
+    updateAutoTitleAfterMessageDelete(conv)
+    if (conv.title !== before) {
+      conv.updatedAt = Date.now()
+      titleChanged = true
+    }
+  })
+  if (!titleChanged) return
+  const conv = useConversationStoreSQLite.getState().conversations.find((c) => c.id === conversationId)
+  if (conv) persistConversationMeta(conv).catch(() => {})
+}
+
 setQueuedMessageMirror({
   remove: (conversationId, messageId) => {
-    const store = useConversationStoreSQLite.getState()
-    const messages = store.conversations.find((c) => c.id === conversationId)?.messages
-    if (!messages?.some((message) => message.id === messageId)) return
-    store.updateMessages(conversationId, messages.filter((message) => message.id !== messageId))
+    applyQueuedMirrorWrite(conversationId, () => {
+      const store = useConversationStoreSQLite.getState()
+      const messages = store.conversations.find((c) => c.id === conversationId)?.messages
+      if (!messages?.some((message) => message.id === messageId)) return
+      store.updateMessages(conversationId, messages.filter((message) => message.id !== messageId))
+      syncQueuedMirrorTitle(conversationId)
+    })
   },
   replace: (conversationId, message) => {
-    const store = useConversationStoreSQLite.getState()
-    const messages = store.conversations.find((c) => c.id === conversationId)?.messages
-    if (!messages?.some((existing) => existing.id === message.id)) return
-    store.updateMessages(
-      conversationId,
-      messages.map((existing) => (existing.id === message.id ? message : existing)),
-    )
+    applyQueuedMirrorWrite(conversationId, () => {
+      const store = useConversationStoreSQLite.getState()
+      const messages = store.conversations.find((c) => c.id === conversationId)?.messages
+      if (!messages?.some((existing) => existing.id === message.id)) return
+      store.updateMessages(
+        conversationId,
+        messages.map((existing) => (existing.id === message.id ? message : existing)),
+      )
+      syncQueuedMirrorTitle(conversationId)
+    })
   },
 })
