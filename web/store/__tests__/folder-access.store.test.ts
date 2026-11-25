@@ -518,6 +518,68 @@ describe('folder-access.store runtime handle binding', () => {
     expect(mockProjectRootRepo.createRoot).not.toHaveBeenCalled()
   })
 
+  // ─── pickNativeHostRoot / bindNativeHostRoot (authorize first, bind later) ───
+
+  it('pickNativeHostRoot authorizes without binding to any project', async () => {
+    mockNativeHostExecutor.authorizeRoot.mockResolvedValue({
+      id: 'scope_early',
+      displayName: 'early-repo',
+    })
+
+    const picked = await useFolderAccessStore.getState().pickNativeHostRoot()
+
+    expect(picked).toEqual({ scopeId: 'scope_early', displayName: 'early-repo' })
+    // No project existed when the prompt was answered — nothing may be written.
+    expect(mockProjectRootRepo.createRoot).not.toHaveBeenCalled()
+  })
+
+  it('pickNativeHostRoot returns null when the user cancels the OS picker', async () => {
+    mockNativeHostExecutor.authorizeRoot.mockResolvedValue(null)
+
+    const picked = await useFolderAccessStore.getState().pickNativeHostRoot()
+
+    expect(picked).toBeNull()
+    expect(mockProjectRootRepo.createRoot).not.toHaveBeenCalled()
+  })
+
+  it('bindNativeHostRoot binds a previously picked scope to the given project', async () => {
+    mockProjectRootRepo.createRoot.mockResolvedValue({
+      id: 'root-late',
+      projectId: 'new-project',
+      name: 'late-repo',
+      backend: 'native-host',
+      scopeId: 'scope_late',
+    })
+
+    const bound = await useFolderAccessStore
+      .getState()
+      .bindNativeHostRoot('new-project', { scopeId: 'scope_late', displayName: 'late-repo' })
+
+    expect(bound).toBe(true)
+    expect(mockProjectRootRepo.findByProject).toHaveBeenCalledWith('new-project')
+    expect(mockProjectRootRepo.createRoot).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectId: 'new-project',
+        name: 'late-repo',
+        backend: 'native-host',
+        scopeId: 'scope_late',
+      })
+    )
+  })
+
+  it('bindNativeHostRoot rejects a folder name already bound to that project', async () => {
+    mockProjectRootRepo.findByProject.mockResolvedValue([
+      { id: 'root-dup', projectId: 'new-project', name: 'dup-repo' },
+    ])
+
+    const bound = await useFolderAccessStore
+      .getState()
+      .bindNativeHostRoot('new-project', { scopeId: 'scope_dup', displayName: 'dup-repo' })
+
+    expect(bound).toBe(false)
+    expect(mockProjectRootRepo.createRoot).not.toHaveBeenCalled()
+  })
+
   // ─── adoptPickedRoot (folder-pick tab handoff) ──────────────────────
 
   /** Build a minimal fake directory handle for adopt tests. */
