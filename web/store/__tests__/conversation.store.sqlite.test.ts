@@ -2521,6 +2521,32 @@ describe('queued-prompt transcript mirror', () => {
     expect(conversation()?.title).toBe('New Chat')
   })
 
+  it('keeps the model-generated title when a queued prompt is edited', () => {
+    const queued = createUserMessage('queued first prompt')
+    const conv = useConversationStore.getState().createNew(undefined, { activate: false })
+    useConversationStore.getState().updateMessages(conv.id, [queued])
+    useConversationRuntimeStore.getState().enqueueMessage(conv.id, {
+      text: 'queued first prompt',
+      enqueuedAt: 1,
+      persistedMessage: queued,
+    })
+    // `generateTitle` stamps titleMode='auto' as well, so the queue mirror must
+    // not re-derive a title that no longer mirrors the prompt text.
+    useConversationStore.setState((state) => {
+      const c = state.conversations.find((x) => x.id === conv.id)
+      if (c) {
+        c.title = 'Model-written title'
+        c.titleMode = 'auto'
+      }
+    })
+
+    useConversationRuntimeStore.getState().updateQueuedMessage(conv.id, 0, { text: 'edited prompt' })
+
+    const conversation = useConversationStore.getState().conversations.find((c) => c.id === conv.id)
+    expect(conversation?.title).toBe('Model-written title')
+    expect(conversation?.messages.find((message) => message.id === queued.id)?.content).toBe('edited prompt')
+  })
+
   it('applies a removal to an evicted conversation whose transcript is only in SQLite', async () => {
     const queued = createUserMessage('queued prompt')
     const earlier = createUserMessage('earlier turn')

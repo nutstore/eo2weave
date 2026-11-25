@@ -2670,14 +2670,18 @@ function applyQueuedMirrorWrite(conversationId: string, apply: () => void): void
 /**
  * A queued prompt can be the FIRST user message, which is what an auto title is
  * derived from — and `updateMessages` only derives a title on the 0→1
- * transition. Re-derive it here, the same way the message-delete paths do;
- * manual/LLM-confirmed titles are left untouched.
+ * transition. Re-derive it here, but ONLY while the title still mirrors the
+ * text being changed: `generateTitle` also stamps `titleMode='auto'`, so an
+ * unconditional re-derive would overwrite an LLM-generated title with the raw
+ * prompt text. Manual titles are left untouched.
  */
-function syncQueuedMirrorTitle(conversationId: string): void {
+function syncQueuedMirrorTitle(conversationId: string, previousContent: string | null): void {
+  if (!previousContent) return
   let titleChanged = false
   useConversationStoreSQLite.setState((state) => {
     const conv = state.conversations.find((c) => c.id === conversationId)
     if (!conv || conv.titleMode !== 'auto') return
+    if (conv.title !== truncateTitle(previousContent)) return
     const before = conv.title
     updateAutoTitleAfterMessageDelete(conv)
     if (conv.title !== before) {
@@ -2695,21 +2699,25 @@ setQueuedMessageMirror({
     applyQueuedMirrorWrite(conversationId, () => {
       const store = useConversationStoreSQLite.getState()
       const messages = store.conversations.find((c) => c.id === conversationId)?.messages
-      if (!messages?.some((message) => message.id === messageId)) return
+      if (!messages) return
+      const removed = messages.find((message) => message.id === messageId)
+      if (!removed) return
       store.updateMessages(conversationId, messages.filter((message) => message.id !== messageId))
-      syncQueuedMirrorTitle(conversationId)
+      syncQueuedMirrorTitle(conversationId, removed.content ?? null)
     })
   },
   replace: (conversationId, message) => {
     applyQueuedMirrorWrite(conversationId, () => {
       const store = useConversationStoreSQLite.getState()
       const messages = store.conversations.find((c) => c.id === conversationId)?.messages
-      if (!messages?.some((existing) => existing.id === message.id)) return
+      if (!messages) return
+      const previous = messages.find((existing) => existing.id === message.id)
+      if (!previous) return
       store.updateMessages(
         conversationId,
         messages.map((existing) => (existing.id === message.id ? message : existing)),
       )
-      syncQueuedMirrorTitle(conversationId)
+      syncQueuedMirrorTitle(conversationId, previous.content ?? null)
     })
   },
 })
