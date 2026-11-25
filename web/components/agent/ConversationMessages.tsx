@@ -19,6 +19,7 @@ import type { VirtualAtBottomListener, VirtualAtBottomHub } from '@/components/a
 import { groupMessagesIntoTurns } from './group-messages'
 import type { Turn } from './group-messages'
 import { QueuedMessageCard } from './QueuedMessageCard'
+import { visibleTranscriptMessages } from './queued-message-visibility'
 import { Clock } from 'lucide-react'
 import { useT } from '@/i18n'
 import type { DraftAssistantStep, Message, ToolCall } from '@/agent/message-types'
@@ -198,7 +199,6 @@ type ConversationFooterProps = {
   draftRuntimeProps: ReturnType<typeof getRuntimeProps>
   toolResults: Map<string, string>
   conversationId?: string | null
-  isProcessing: boolean
   queuedMessages: { text: string; assets?: unknown[]; enqueuedAt: number }[]
   mentionAgents: { id: string; name?: string }[]
   onSearchFiles?: (query: string) => Promise<FileMentionItem[]>
@@ -213,7 +213,6 @@ function ConversationFooterInner({
   draftRuntimeProps,
   toolResults,
   conversationId,
-  isProcessing,
   queuedMessages,
   mentionAgents,
   onSearchFiles,
@@ -236,8 +235,10 @@ function ConversationFooterInner({
         />
       )}
 
-      {/* Queued messages — shown while agent is processing */}
-      {isProcessing && queuedMessages.length > 0 && (
+      {/* Queued messages — rendered whenever prompts wait for delivery, so a
+          prompt that outlives a run (an error keeps it for a retry) still has
+          its edit/remove/move controls */}
+      {queuedMessages.length > 0 && (
         <div className="space-y-2">
           {/* Queue divider */}
           <div className="flex items-center gap-2 text-xs text-primary-500 dark:text-primary-400">
@@ -245,12 +246,13 @@ function ConversationFooterInner({
             <span>{t('conversation.queue.divider', { count: queuedMessages.length })}</span>
             <div className="h-px flex-1 bg-primary-200 dark:bg-primary-800" />
           </div>
-          {/* Queued message cards */}
+          {/* Queued message cards — the card owns a pending prompt's actions */}
           {queuedMessages.map((msg, idx) => (
             <QueuedMessageCard
               key={`queued-${idx}-${msg.enqueuedAt}`}
               conversationId={conversationId ?? ''}
               index={idx}
+              enqueuedAt={msg.enqueuedAt}
               total={queuedMessages.length}
               text={msg.text}
               assets={msg.assets as never}
@@ -517,8 +519,16 @@ export const ConversationMessages = memo(forwardRef(function ConversationMessage
       return s.pendingMessageQueues.get(conversationId) ?? []
     }),
   )
-
-  const turns = useMemo(() => groupMessagesIntoTurns(activeMessages), [activeMessages])
+  // An app-tool prompt is persisted into the transcript at enqueue time, so
+  // rendering its bubble next to the queue card shows the same prompt twice.
+  // The CARD is the surface that stays — it carries the queue-specific
+  // edit/remove/move actions and renders whenever the queue is non-empty — so
+  // the bubble stays hidden for as long as the entry is queued. Entries
+  // without a persisted record (UI sends) are memory-only and own no bubble.
+  const turns = useMemo(
+    () => groupMessagesIntoTurns(visibleTranscriptMessages(activeMessages, queuedMessages)),
+    [activeMessages, queuedMessages],
+  )
   const lastTurn = turns[turns.length - 1]
 
   // ── Virtualization (only above VIRTUALIZATION_THRESHOLD messages) ──
@@ -956,7 +966,6 @@ export const ConversationMessages = memo(forwardRef(function ConversationMessage
       draftRuntimeProps={draftRuntimeProps}
       toolResults={toolResults}
       conversationId={conversationId}
-      isProcessing={isProcessing}
       queuedMessages={queuedMessages}
       mentionAgents={mentionAgents}
       onSearchFiles={onSearchFiles}

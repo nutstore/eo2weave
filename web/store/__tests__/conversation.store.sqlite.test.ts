@@ -2446,3 +2446,132 @@ describe('conversation.store.sqlite tool-call routing', () => {
     })
   })
 })
+
+describe('queued-prompt transcript mirror', () => {
+  beforeEach(() => {
+    messageRepoInsertMock.mockReset()
+    messageRepoInsertMock.mockResolvedValue(undefined)
+    messageRepoReplaceAllMock.mockReset()
+    messageRepoReplaceAllMock.mockResolvedValue(undefined)
+    conversationRepoSaveMetaMock.mockReset()
+    conversationRepoSaveMetaMock.mockResolvedValue(undefined)
+    useConversationRuntimeStore.setState({ pendingMessageQueues: new Map(), runtimes: new Map() })
+    useConversationStore.setState({
+      conversations: [],
+      activeConversationId: null,
+      loaded: true,
+      suggestedFollowUps: new Map(),
+      cancelledRunIds: new Set(),
+      mountedConversations: new Map(),
+    } as any)
+  })
+
+  function seedQueue(queued: ReturnType<typeof createUserMessage>, other = createUserMessage('keep me')) {
+    const conv = useConversationStore.getState().createNew('queue-mirror', { activate: false })
+    useConversationStore.getState().updateMessages(conv.id, [other, queued])
+    useConversationRuntimeStore.getState().enqueueMessage(conv.id, {
+      text: queued.content ?? '',
+      enqueuedAt: 1,
+      persistedMessage: queued,
+    })
+    const messages = () =>
+      useConversationStore.getState().conversations.find((c) => c.id === conv.id)?.messages ?? []
+    return { conv, other, messages }
+  }
+
+  it('drops the transcript record when a queued app-tool prompt is discarded', () => {
+    const queued = createUserMessage('queued prompt')
+    const { conv, other, messages } = seedQueue(queued)
+
+    useConversationRuntimeStore.getState().removeQueuedMessage(conv.id, 0)
+
+    expect(useConversationRuntimeStore.getState().getQueueDepth(conv.id)).toBe(0)
+    expect(messages().map((message) => message.id)).toEqual([other.id])
+  })
+
+  it('mirrors a queue edit into the transcript record', () => {
+    const queued = createUserMessage('enqueue-time text')
+    const { conv, messages } = seedQueue(queued)
+
+    useConversationRuntimeStore.getState().updateQueuedMessage(conv.id, 0, { text: 'edited text' })
+
+    expect(useConversationRuntimeStore.getState().getQueuedMessage(conv.id, 0)?.text).toBe('edited text')
+    const mirrored = messages().find((message) => message.id === queued.id)
+    expect(mirrored?.content).toBe('edited text')
+    expect(mirrored?.timestamp).toBe(queued.timestamp)
+  })
+
+  it('re-derives the auto title when the discarded prompt was the first user message', () => {
+    const queued = createUserMessage('queued first prompt')
+    const conv = useConversationStore.getState().createNew(undefined, { activate: false })
+    useConversationStore.getState().updateMessages(conv.id, [queued])
+    useConversationRuntimeStore.getState().enqueueMessage(conv.id, {
+      text: 'queued first prompt',
+      enqueuedAt: 1,
+      persistedMessage: queued,
+    })
+    const conversation = () => useConversationStore.getState().conversations.find((c) => c.id === conv.id)
+    expect(conversation()?.title).toBe('queued first prompt')
+
+    useConversationRuntimeStore.getState().removeQueuedMessage(conv.id, 0)
+
+    // The transcript now has no user message left, so the auto title falls back
+    // to the default name instead of keeping the discarded prompt's text.
+    expect(conversation()?.messages).toEqual([])
+    expect(conversation()?.title).toBe('New Chat')
+  })
+
+  it('keeps the model-generated title when a queued prompt is edited', () => {
+    const queued = createUserMessage('queued first prompt')
+    const conv = useConversationStore.getState().createNew(undefined, { activate: false })
+    useConversationStore.getState().updateMessages(conv.id, [queued])
+    useConversationRuntimeStore.getState().enqueueMessage(conv.id, {
+      text: 'queued first prompt',
+      enqueuedAt: 1,
+      persistedMessage: queued,
+    })
+    // `generateTitle` stamps titleMode='auto' as well, so the queue mirror must
+    // not re-derive a title that no longer mirrors the prompt text.
+    useConversationStore.setState((state) => {
+      const c = state.conversations.find((x) => x.id === conv.id)
+      if (c) {
+        c.title = 'Model-written title'
+        c.titleMode = 'auto'
+      }
+    })
+
+    useConversationRuntimeStore.getState().updateQueuedMessage(conv.id, 0, { text: 'edited prompt' })
+
+    const conversation = useConversationStore.getState().conversations.find((c) => c.id === conv.id)
+    expect(conversation?.title).toBe('Model-written title')
+    expect(conversation?.messages.find((message) => message.id === queued.id)?.content).toBe('edited prompt')
+  })
+
+  it('applies a removal to an evicted conversation whose transcript is only in SQLite', async () => {
+    const queued = createUserMessage('queued prompt')
+    const earlier = createUserMessage('earlier turn')
+    const conv = useConversationStore.getState().createNew('queue-mirror', { activate: false })
+    useConversationStore.getState().updateMessages(conv.id, [earlier, queued])
+    useConversationRuntimeStore.getState().enqueueMessage(conv.id, {
+      text: 'queued prompt',
+      enqueuedAt: 1,
+      persistedMessage: queued,
+    })
+    // Evicted between enqueue and discard: the row exists only in SQLite.
+    useConversationStore.setState((state) => {
+      const target = state.conversations.find((c) => c.id === conv.id)
+      if (target) {
+        target.messages = []
+        target.messagesLoaded = false
+      }
+    })
+    messageRepoFindMock.mockResolvedValue([earlier, queued])
+
+    useConversationRuntimeStore.getState().removeQueuedMessage(conv.id, 0)
+
+    await vi.waitFor(() => {
+      const messages = useConversationStore.getState().conversations.find((c) => c.id === conv.id)?.messages ?? []
+      expect(messages.map((message) => message.id)).toEqual([earlier.id])
+    })
+  })
+})
