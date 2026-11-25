@@ -61,6 +61,22 @@ describe('queued message transcript mirror dispatch', () => {
     })
   })
 
+  it('accumulates successive partial edits', () => {
+    const persisted = createUserMessage('enqueue-time text')
+    const runtime = useConversationRuntimeStore.getState()
+    runtime.enqueueMessage(conversationId, { text: 'enqueue-time text', enqueuedAt: 1, persistedMessage: persisted })
+
+    runtime.updateQueuedMessage(conversationId, 0, { text: 'edited text' })
+    runtime.updateQueuedMessage(conversationId, 0, { assets: [] })
+
+    // The second patch carries only assets; the mirrored record must keep the
+    // text the first patch installed, not the enqueue-time value.
+    expect(mirror.replace).toHaveBeenLastCalledWith(
+      conversationId,
+      expect.objectContaining({ content: 'edited text', assets: [] }),
+    )
+  })
+
   it('does nothing for a stale queue index', () => {
     const runtime = useConversationRuntimeStore.getState()
     runtime.enqueueMessage(conversationId, { text: 'kept', enqueuedAt: 1 })

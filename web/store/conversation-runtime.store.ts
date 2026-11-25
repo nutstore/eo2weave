@@ -506,21 +506,27 @@ export const useConversationRuntimeStore = create<ConversationRuntimeState>()(
     },
 
     updateQueuedMessage: (convId, index, patch) => {
-      const persisted = get().pendingMessageQueues.get(convId)?.[index]?.persistedMessage
+      const entry = get().pendingMessageQueues.get(convId)?.[index]
+      // Build the mirrored record from the entry's CURRENT values, then write it
+      // back as `persistedMessage`: successive partial patches (text, then
+      // attachments, then text again) must accumulate instead of restoring the
+      // enqueue-time value the previous patch replaced.
+      const mirrored: Message | null = entry?.persistedMessage
+        ? {
+            ...entry.persistedMessage,
+            content: patch.text ?? entry.text,
+            assets: patch.assets ?? entry.assets,
+          }
+        : null
       set((state) => {
         const q = state.pendingMessageQueues.get(convId)
         if (q && index >= 0 && index < q.length) {
           if (patch.text !== undefined) q[index].text = patch.text
           if (patch.assets !== undefined) q[index].assets = patch.assets
+          if (mirrored) q[index].persistedMessage = mirrored
         }
       })
-      if (persisted) {
-        queuedMessageMirror()?.replace(convId, {
-          ...persisted,
-          content: patch.text ?? persisted.content,
-          assets: patch.assets ?? persisted.assets,
-        })
-      }
+      if (mirrored) queuedMessageMirror()?.replace(convId, mirrored)
     },
 
     moveQueuedMessage: (convId, fromIndex, toIndex) => {
