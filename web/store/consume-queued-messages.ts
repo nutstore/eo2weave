@@ -1,7 +1,17 @@
 import { toast } from 'sonner'
 import { createUserMessage, type Conversation, type Message } from '@/agent/message-types'
 import type { LLMProviderType } from '@/agent/providers/types'
-import { useConversationRuntimeStore } from './conversation-runtime.store'
+import { useConversationRuntimeStore } from '@/store/conversation-runtime.store'
+
+/** Keep durable but not-yet-dequeued app-tool prompts out of agent input. */
+export function messagesForAgentTurn(conversationId: string, messages: Message[]): Message[] {
+  const queuedIds = new Set(
+    (useConversationRuntimeStore.getState().pendingMessageQueues.get(conversationId) ?? [])
+      .map((item) => item.persistedMessage?.id)
+      .filter((id): id is string => id !== undefined),
+  )
+  return queuedIds.size ? messages.filter((message) => !queuedIds.has(message.id)) : messages
+}
 
 interface QueueConsumer {
   conversationId: string
@@ -50,6 +60,8 @@ export async function consumeQueuedMessages({
   if (!batch) return
 
   const messages = current.messages.slice()
+  const consumedMessages: Message[] = []
+  const consumedIds = new Set<string>()
   let changed = false
   for (const queued of batch.messages) {
     const userMsg = queued.persistedMessage
@@ -58,21 +70,34 @@ export async function consumeQueuedMessages({
           contentParts: queued.contentParts,
           readImageHandoff: queued.readImageHandoff,
         })
-    const index = messages.findIndex((message) => message.id === userMsg.id)
-    if (index === -1) {
-      messages.push(userMsg)
-      changed = true
-    } else {
-      const existing = messages[index]
-      const sameAssets = (existing.assets ?? []).map((a) => a.id).join() ===
-        (userMsg.assets ?? []).map((a) => a.id).join()
-      if (existing.content !== userMsg.content || !sameAssets) {
-        messages[index] = { ...existing, content: userMsg.content, assets: userMsg.assets }
-        changed = true
-      }
-    }
+    const existing = messages.find((message) => message.id === userMsg.id)
+    const sameAssets = (existing?.assets ?? []).map((a) => a.id).join() ===
+      (userMsg.assets ?? []).map((a) => a.id).join()
+    if (!existing || existing.content !== userMsg.content || !sameAssets) changed = true
+    consumedMessages.push(existing
+      ? { ...existing, content: userMsg.content, assets: userMsg.assets }
+      : userMsg)
+    consumedIds.add(userMsg.id)
   }
-  if (changed) updateMessages(messages)
+  // Anchor the batch before its first visible record, or the first still-
+  // queued persisted record. Missing earlier messages must precede later ones.
+  if (consumedMessages.length) {
+    const pendingIds = new Set(
+      (runtime.pendingMessageQueues.get(conversationId) ?? [])
+        .map((item) => item.persistedMessage?.id)
+        .filter((id): id is string => id !== undefined),
+    )
+    const firstIndex = messages.findIndex((message) =>
+      consumedIds.has(message.id) || pendingIds.has(message.id))
+    const remaining = messages.filter((message) => !consumedIds.has(message.id))
+    const insertionIndex = firstIndex < 0 ? remaining.length :
+      messages.slice(0, firstIndex).filter((message) => !consumedIds.has(message.id)).length
+    const ordered = [
+      ...remaining.slice(0, insertionIndex), ...consumedMessages, ...remaining.slice(insertionIndex),
+    ]
+    if (!changed && ordered.some((message, index) => message.id !== messages[index]?.id)) changed = true
+    if (changed) updateMessages(ordered)
+  }
 
   // An all-rerun batch still needs one turn. Use the head even when that
   // entry is a rerun trigger (batch.messages will then be empty).

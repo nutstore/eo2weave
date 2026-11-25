@@ -1,7 +1,7 @@
 import { restoreCompressionBaseline } from '@/agent/loop/context-compression'
 import { getSubagentContinuation, recoverSubagentContinuations, forgetSubagentContinuation } from './subagent-continuation'
 import { invalidateConversationRunClaim } from './conversation-agent-run'
-import { consumeQueuedMessages } from './consume-queued-messages'
+import { consumeQueuedMessages } from '@/store/consume-queued-messages'
 /* eslint-disable @typescript-eslint/no-explicit-any */
 /**
  * Conversation Store

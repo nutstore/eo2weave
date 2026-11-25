@@ -1,9 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createConversation, createUserMessage, type Conversation, type Message } from '@/agent/message-types'
-import { useConversationRuntimeStore } from '../conversation-runtime.store'
-import { consumeQueuedMessages } from '../consume-queued-messages'
+import { useConversationRuntimeStore } from '@/store/conversation-runtime.store'
+import { consumeQueuedMessages, messagesForAgentTurn } from '@/store/consume-queued-messages'
 
 vi.mock('sonner', () => ({ toast: { error: vi.fn() } }))
+vi.mock('@/mcp/continue-task', () => ({ continueQueuedMCPTask: vi.fn(async () => {}) }))
+
+import { continueQueuedMCPTask } from '@/mcp/continue-task'
 
 const conversationId = 'batch-consumer-test'
 
@@ -26,7 +29,10 @@ function setup(initialMessages: Message[] = []) {
 }
 
 describe('consumeQueuedMessages', () => {
-  beforeEach(() => useConversationRuntimeStore.getState().clearQueue(conversationId))
+  beforeEach(() => {
+    useConversationRuntimeStore.getState().clearQueue(conversationId)
+    vi.clearAllMocks()
+  })
 
   it('keeps separate user records but starts only one agent turn for a batch', async () => {
     const { consume, updateMessages, runAgent, getMessages } = setup()
@@ -56,14 +62,62 @@ describe('consumeQueuedMessages', () => {
     expect(updateMessages).toHaveBeenCalledTimes(1)
   })
 
-  it('does not consume an MCP continuation as a normal queued user message', () => {
-    const { runAgent } = setup()
+  it('keeps pending persisted prompts out of the current batch agent input', async () => {
+    const queued = Array.from({ length: 12 }, (_, index) => createUserMessage(`prompt ${index}`))
+    const { consume, getMessages, runAgent } = setup(queued)
+    const runtime = useConversationRuntimeStore.getState()
+    for (const [index, message] of queued.entries()) {
+      runtime.enqueueMessage(conversationId, {
+        text: message.content ?? '', enqueuedAt: index, persistedMessage: message,
+      })
+    }
+    await consume()
+    await vi.waitFor(() => expect(runAgent).toHaveBeenCalledTimes(1))
+    expect(runtime.getQueueDepth(conversationId)).toBe(2)
+    expect(getMessages()).toHaveLength(12)
+    expect(messagesForAgentTurn(conversationId, getMessages()).map((message) => message.id))
+      .toEqual(queued.slice(0, 10).map((message) => message.id))
+  })
+
+  it('inserts a capped earlier batch before persisted messages waiting for the next turn', async () => {
+    const queued = Array.from({ length: 12 }, (_, index) => createUserMessage(`prompt ${index}`))
+    const { consume, getMessages, runAgent } = setup(queued.slice(10))
+    const runtime = useConversationRuntimeStore.getState()
+    for (const [index, message] of queued.entries()) {
+      runtime.enqueueMessage(conversationId, {
+        text: message.content ?? '', enqueuedAt: index,
+        ...(index >= 10 ? { persistedMessage: message } : {}),
+      })
+    }
+    await consume()
+    await vi.waitFor(() => expect(runAgent).toHaveBeenCalledTimes(1))
+    expect(getMessages().map((message) => message.content))
+      .toEqual(queued.map((message) => message.content))
+    expect(messagesForAgentTurn(conversationId, getMessages()).map((message) => message.content))
+      .toEqual(queued.slice(0, 10).map((message) => message.content))
+  })
+
+  it('orders missing and persisted messages by their queue positions', async () => {
+    const later = createUserMessage('later')
+    const { consume, getMessages, runAgent } = setup([later])
+    const runtime = useConversationRuntimeStore.getState()
+    runtime.enqueueMessage(conversationId, { text: 'earlier', enqueuedAt: 1 })
+    runtime.enqueueMessage(conversationId, { text: 'later', enqueuedAt: 2, persistedMessage: later })
+    await consume()
+    await vi.waitFor(() => expect(runAgent).toHaveBeenCalledTimes(1))
+    expect(getMessages().map((message) => message.content)).toEqual(['earlier', 'later'])
+    expect(getMessages()[1].id).toBe(later.id)
+  })
+
+  it('delivers an MCP queue head without dispatching a normal agent turn', async () => {
+    const { consume, runAgent, updateMessages } = setup()
     const runtime = useConversationRuntimeStore.getState()
     runtime.enqueueMessage(conversationId, { text: 'result', enqueuedAt: 1, mcpTaskId: 'task-1' })
-    // The continuation import is mocked in the dedicated MCP task tests; this
-    // case only verifies the batch selector's barrier without invoking it.
-    expect(runtime.dequeueBatch(conversationId)).toBeNull()
+    await consume()
+    expect(continueQueuedMCPTask).toHaveBeenCalledTimes(1)
+    expect(continueQueuedMCPTask).toHaveBeenCalledWith('task-1', 'result')
     expect(runtime.getQueueDepth(conversationId)).toBe(1)
+    expect(updateMessages).not.toHaveBeenCalled()
     expect(runAgent).not.toHaveBeenCalled()
   })
 })

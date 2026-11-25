@@ -47,7 +47,7 @@ import { getAgentModeForWorkspace } from './workspace-preferences.store'
 import type { LLMProviderType } from '@/agent/providers/types'
 import type { SubagentTaskNotification, SubagentStepNotification } from '@/agent/tools/tool-types'
 import { persistConversationMeta, persistMessageReplace } from './conversation-persist'
-import { consumeQueuedMessages } from './consume-queued-messages'
+import { consumeQueuedMessages, messagesForAgentTurn } from '@/store/consume-queued-messages'
 
 /**
  * zustand setter as captured by the store creator closure (immer middleware:
@@ -783,7 +783,7 @@ async function runAgentBody(
           })
         }
 
-        const lastUserMessage = [...conv.messages].reverse().find((m) => isConversationUserMessage(m))
+        const lastUserMessage = [...messagesForAgentTurn(conversationId, conv.messages)].reverse().find((m) => isConversationUserMessage(m))
 
         // ── Registry recheck immediately before dispatch (#87, Sourcery round 3) ──
         // The entry guard ran before workspace setup / directory-handle
@@ -1440,7 +1440,9 @@ async function runAgentBody(
 
         setAgentLoop(conversationId, agentLoop)
 
-        const currentMessages = get().conversations.find(c => c.id === conversationId)?.messages ?? conv.messages
+        const currentMessages = messagesForAgentTurn(
+          conversationId, get().conversations.find(c => c.id === conversationId)?.messages ?? conv.messages,
+        )
 
         let finalizationPromise: Promise<void> | undefined
         let finalizationPersistence: Promise<void> | undefined
