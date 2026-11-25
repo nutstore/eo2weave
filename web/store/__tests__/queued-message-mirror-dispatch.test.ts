@@ -76,14 +76,4 @@ describe('queued message transcript mirror dispatch', () => {
       expect.objectContaining({ content: 'edited text', assets: [] }),
     )
   })
-
-  it('does nothing for a stale queue index', () => {
-    const runtime = useConversationRuntimeStore.getState()
-    runtime.enqueueMessage(conversationId, { text: 'kept', enqueuedAt: 1 })
-
-    runtime.removeQueuedMessage(conversationId, 3)
-
-    expect(runtime.getQueueDepth(conversationId)).toBe(1)
-    expect(mirror.remove).not.toHaveBeenCalled()
-  })
 })

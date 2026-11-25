@@ -19,7 +19,7 @@ import type { VirtualAtBottomListener, VirtualAtBottomHub } from '@/components/a
 import { groupMessagesIntoTurns } from './group-messages'
 import type { Turn } from './group-messages'
 import { QueuedMessageCard } from './QueuedMessageCard'
-import { hideQueuedTranscriptMessages } from './queued-message-visibility'
+import { visibleTranscriptMessages } from './queued-message-visibility'
 import { Clock } from 'lucide-react'
 import { useT } from '@/i18n'
 import type { DraftAssistantStep, Message, ToolCall } from '@/agent/message-types'
@@ -523,10 +523,11 @@ export const ConversationMessages = memo(forwardRef(function ConversationMessage
   // The CARD is the surface that stays: it carries the queue-specific
   // edit/remove/move actions, while the bubble's own edit/delete actions are
   // disabled during a run. Entries without a persisted record (UI sends) are
-  // memory-only and own no transcript bubble.
+  // memory-only and own no transcript bubble. Cards render only while a run is
+  // processing, so the bubble must come back otherwise (idle / errored run).
   const turns = useMemo(
-    () => groupMessagesIntoTurns(hideQueuedTranscriptMessages(activeMessages, queuedMessages)),
-    [activeMessages, queuedMessages],
+    () => groupMessagesIntoTurns(visibleTranscriptMessages(activeMessages, queuedMessages, isProcessing)),
+    [activeMessages, queuedMessages, isProcessing],
   )
   const lastTurn = turns[turns.length - 1]
 

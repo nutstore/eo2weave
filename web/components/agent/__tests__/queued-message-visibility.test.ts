@@ -3,6 +3,7 @@ import { createUserMessage } from '@/agent/message-types'
 import {
   hideQueuedTranscriptMessages,
   pendingQueuedMessageIds,
+  visibleTranscriptMessages,
 } from '@/components/agent/queued-message-visibility'
 import type { QueuedMessage } from '@/store/conversation-runtime.store'
 
@@ -39,5 +40,22 @@ describe('hideQueuedTranscriptMessages', () => {
     const queued: QueuedMessage[] = [{ text: 'typed while busy', enqueuedAt: 1 }]
 
     expect(hideQueuedTranscriptMessages(messages, queued)).toBe(messages)
+  })
+})
+
+describe('visibleTranscriptMessages', () => {
+  it('hides a queued prompt bubble only while the queue cards render', () => {
+    const persisted = createUserMessage('app-tool prompt')
+    const queued: QueuedMessage[] = [{ text: 'app-tool prompt', enqueuedAt: 1, persistedMessage: persisted }]
+
+    expect(visibleTranscriptMessages([persisted], queued, true)).toEqual([])
+    expect(visibleTranscriptMessages([persisted], queued, false)).toEqual([persisted])
+  })
+
+  it('returns the same array instance when no cards are on screen', () => {
+    const messages = [createUserMessage('hello')]
+    const queued: QueuedMessage[] = [{ text: 'hello', enqueuedAt: 1, persistedMessage: messages[0] }]
+
+    expect(visibleTranscriptMessages(messages, queued, false)).toBe(messages)
   })
 })

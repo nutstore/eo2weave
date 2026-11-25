@@ -38,3 +38,19 @@ export function hideQueuedTranscriptMessages(
   if (pending.size === 0) return messages
   return messages.filter((message) => !pending.has(message.id))
 }
+
+/**
+ * The transcript the conversation should render: bubbles of still-queued
+ * prompts are hidden ONLY while the queue cards that replace them are on
+ * screen. The cards render during a run, so an idle or errored conversation
+ * (an error keeps real queued prompts for a retry) must show the bubbles —
+ * otherwise the prompt would be invisible in both surfaces.
+ */
+export function visibleTranscriptMessages(
+  messages: Message[],
+  queued: QueuedMessage[],
+  queueCardsVisible: boolean,
+): Message[] {
+  if (!queueCardsVisible) return messages
+  return hideQueuedTranscriptMessages(messages, queued)
+}
