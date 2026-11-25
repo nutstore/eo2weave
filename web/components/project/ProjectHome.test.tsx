@@ -19,9 +19,10 @@ vi.mock('@/components/activity/ActivityHeatmap', () => ({
 
 // `vi.mock` factories are hoisted to the top of the file — use vi.hoisted
 // to share state between the factory body and the test bodies below.
-const { folderStore, setHandleSpy, addNativeHostRootSpy } = vi.hoisted(() => {
+const { folderStore, setHandleSpy, pickNativeHostRootSpy, bindNativeHostRootSpy } = vi.hoisted(() => {
   const setHandle = vi.fn().mockResolvedValue(undefined)
-  const addNativeHostRoot = vi.fn().mockResolvedValue(false)
+  const pickNativeHostRoot = vi.fn().mockResolvedValue(null)
+  const bindNativeHostRoot = vi.fn().mockResolvedValue(false)
   type FolderRoot = {
     id: string
     name: string
@@ -31,10 +32,16 @@ const { folderStore, setHandleSpy, addNativeHostRootSpy } = vi.hoisted(() => {
   }
   const store = {
     setHandle,
-    addNativeHostRoot,
+    pickNativeHostRoot,
+    bindNativeHostRoot,
     roots: [] as FolderRoot[],
   }
-  return { folderStore: store, setHandleSpy: setHandle, addNativeHostRootSpy: addNativeHostRoot }
+  return {
+    folderStore: store,
+    setHandleSpy: setHandle,
+    pickNativeHostRootSpy: pickNativeHostRoot,
+    bindNativeHostRootSpy: bindNativeHostRoot,
+  }
 })
 
 vi.mock('@/store/folder-access.store', () => ({
@@ -435,19 +442,25 @@ describe('ProjectHome — new homepage layout', () => {
     expect(setHandleSpy).toHaveBeenNthCalledWith(2, 'new-project-id', handleB)
   })
 
-  it('binds a native-host root eagerly when the picker is available', async () => {
+  it('authorizes a native-host folder before creating the project, then binds it on submit', async () => {
     const user = userEvent.setup()
     // Flip native-host availability on for this test only.
     const nativeAvailSpy = nativeDiskExecutor.isNativeHostAvailable as unknown as ReturnType<typeof vi.fn>
     nativeAvailSpy.mockReturnValue(true)
-    // Simulate the real store side effect: addNativeHostRoot appends a root
-    // row (backend=native-host, scopeId) and loadRoots() pulls it into the
-    // snapshot. The mock captures the projectId passed in.
-    addNativeHostRootSpy.mockImplementationOnce(async (projectId: string) => {
+    // The OS picker only authorizes the folder on the host; binding to the new
+    // project happens on submit (regression: the project used to be created
+    // eagerly BEFORE the authorization prompt appeared).
+    pickNativeHostRootSpy.mockResolvedValueOnce({
+      scopeId: 'scope-1',
+      displayName: '/Users/me/Documents',
+    })
+    bindNativeHostRootSpy.mockImplementationOnce(async (projectId: string, picked: { displayName: string }) => {
       folderStore.roots.push({
         id: 'root-1',
-        name: '/Users/me/Documents',
+        name: picked.displayName,
         projectId,
+        backend: 'native-host',
+        scopeId: 'scope-1',
       })
       return true
     })
@@ -472,15 +485,65 @@ describe('ProjectHome — new homepage layout', () => {
     await user.type(screen.getByPlaceholderText('Enter project name'), 'Native Host Project')
     await user.click(screen.getByRole('button', { name: 'Authorize local' }))
 
-    // Project must have been created BEFORE addNativeHostRoot runs (eager).
-    expect(onCreateProject).toHaveBeenCalledWith('Native Host Project')
-    expect(addNativeHostRootSpy).toHaveBeenCalledWith('new-project-id')
-    // Chip with the new root name should be visible.
+    // Authorization must happen with NO project created yet.
+    expect(pickNativeHostRootSpy).toHaveBeenCalledTimes(1)
+    expect(bindNativeHostRootSpy).not.toHaveBeenCalled()
+    expect(onCreateProject).not.toHaveBeenCalled()
+    // Chip for the authorized folder should be visible.
     expect(await screen.findByText('/Users/me/Documents')).toBeInTheDocument()
 
-    // Cleanup so the mock returns to its default for sibling tests.
+    await user.click(screen.getByRole('button', { name: 'Create' }))
+
+    expect(onCreateProject).toHaveBeenCalledWith('Native Host Project')
+    expect(bindNativeHostRootSpy).toHaveBeenCalledWith('new-project-id', {
+      scopeId: 'scope-1',
+      displayName: '/Users/me/Documents',
+    })
+
+    // Cleanup so the mocks return to their defaults for sibling tests.
     nativeAvailSpy.mockReturnValue(false)
-    addNativeHostRootSpy.mockReset()
+    pickNativeHostRootSpy.mockReset()
+    bindNativeHostRootSpy.mockReset()
+    folderStore.roots = []
+  })
+
+  it('leaves no project behind when the dialog is cancelled after authorizing a folder', async () => {
+    const user = userEvent.setup()
+    const nativeAvailSpy = nativeDiskExecutor.isNativeHostAvailable as unknown as ReturnType<typeof vi.fn>
+    nativeAvailSpy.mockReturnValue(true)
+    pickNativeHostRootSpy.mockResolvedValueOnce({
+      scopeId: 'scope-2',
+      displayName: '/Users/me/Downloads',
+    })
+
+    const onCreateProject = vi.fn().mockResolvedValue('new-project-id')
+
+    render(
+      <ProjectHome
+        projects={[]}
+        projectStats={{}}
+        activeProjectId=""
+        onOpenProject={vi.fn()}
+        onCreateProject={onCreateProject}
+        onRenameProject={vi.fn()}
+        onArchiveProject={vi.fn()}
+        onDeleteProject={vi.fn()}
+        onClearLocalData={vi.fn()}
+      />,
+    )
+
+    await user.click(screen.getByRole('button', { name: 'New Project' }))
+    await user.type(screen.getByPlaceholderText('Enter project name'), 'Cancelled Project')
+    await user.click(screen.getByRole('button', { name: 'Authorize local' }))
+    expect(await screen.findByText('/Users/me/Downloads')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Cancel' }))
+
+    expect(onCreateProject).not.toHaveBeenCalled()
+    expect(bindNativeHostRootSpy).not.toHaveBeenCalled()
+
+    nativeAvailSpy.mockReturnValue(false)
+    pickNativeHostRootSpy.mockReset()
     folderStore.roots = []
   })
 

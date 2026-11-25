@@ -29,6 +29,7 @@ import type {
   FolderAccessStatus,
   FolderAccessStore,
   FolderHydrationOptions,
+  NativeHostPickedRoot,
   RootInfo,
 } from '@/types/folder-access'
 import { folderAccessRepo } from '@/services/folder-access.repository'
@@ -1335,6 +1336,68 @@ export const useFolderAccessStore = create<FolderAccessStore>()(
       return true
     },
 
+    pickNativeHostRoot: async () => {
+      if (!isNativeHostAvailable()) {
+        toast.error(i18nText('projectRoots.nativeHostUnavailable', 'Local connection is unavailable'))
+        return null
+      }
+
+      try {
+        // The OS picker is project-agnostic: `pick_folder` only mints/dedupes a
+        // host-side scope by canonical path, so authorization can happen before
+        // the project that will bind it exists (new-project dialog).
+        const root = await new NativeHostExecutor().authorizeRoot('')
+        if (!root) return null
+        return { scopeId: root.id, displayName: root.displayName } satisfies NativeHostPickedRoot
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : 'unknown error'
+        toast.error(i18nText('projectRoots.nativeRootAddFailed', `Failed to add local connection: ${errorMessage}`, { error: errorMessage }))
+        return null
+      }
+    },
+
+    bindNativeHostRoot: async (projectId: string, picked: NativeHostPickedRoot) => {
+      if (!projectId) return false
+      try {
+        // Duplicate names are checked against the TARGET project, not whatever
+        // project happens to be active (exec's in-flow authorization can bind a
+        // project the UI pointer has already left).
+        const existingRoots = await getProjectRootRepository().findByProject(projectId)
+        if (existingRoots.some((root) => root.name === picked.displayName)) {
+          toast.error(i18nText('projectRoots.rootAlreadyExists', `A folder named "${picked.displayName}" already exists`, { name: picked.displayName }))
+          return false
+        }
+        // Host-side scopes are GLOBAL: if another project already added this
+        // same local folder, the Rust host returns the SAME scope_id (scope.rs
+        // add_scope dedupes by canonical path) and we simply create another
+        // project binding for it — no extra error handling needed here.
+        await getProjectRootRepository().createRoot({
+          projectId,
+          name: picked.displayName,
+          backend: 'native-host',
+          scopeId: picked.scopeId,
+        })
+        // loadRoots() reads the ACTIVE project. When the binding targets another
+        // project (new-project dialog before navigation, exec in-flow auth), it
+        // would pull the wrong project's roots into state — the target project
+        // loads its own roots when it becomes active.
+        if (get().activeProjectId === projectId) {
+          await get().loadRoots()
+        }
+        try {
+          const { getWorkspaceManager } = await import('@/opfs')
+          ;(await getWorkspaceManager()).invalidateRootMapCache(projectId)
+        } catch { /* manager not ready */ }
+        get().clearFilePaths()
+        toast.success(i18nText('projectRoots.nativeRootAdded', `Added "${picked.displayName}" through local connection`, { name: picked.displayName }))
+        return true
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : 'unknown error'
+        toast.error(i18nText('projectRoots.nativeRootAddFailed', `Failed to add local connection: ${errorMessage}`, { error: errorMessage }))
+        return false
+      }
+    },
+
     addNativeHostRoot: async (projectIdOverride?: string) => {
       // Explicit override wins (e.g. exec's in-flow authorization passes the
       // CONVERSATION's project: the global active-project pointer can change
@@ -1345,37 +1408,9 @@ export const useFolderAccessStore = create<FolderAccessStore>()(
         toast.error(i18nText('projectRoots.nativeHostUnavailable', 'Local connection is unavailable'))
         return false
       }
-
-      try {
-        const root = await new NativeHostExecutor().authorizeRoot(projectId)
-        if (!root) return false
-        if (get().roots.some((item) => item.name === root.displayName)) {
-          toast.error(i18nText('projectRoots.rootAlreadyExists', `A folder named "${root.displayName}" already exists`, { name: root.displayName }))
-          return false
-        }
-        // Host-side scopes are GLOBAL: if another project already added this
-        // same local folder, the Rust host returns the SAME scope_id (scope.rs
-        // add_scope dedupes by canonical path) and we simply create another
-        // project binding for it — no extra error handling needed here.
-        await getProjectRootRepository().createRoot({
-          projectId,
-          name: root.displayName,
-          backend: 'native-host',
-          scopeId: root.id,
-        })
-        await get().loadRoots()
-        try {
-          const { getWorkspaceManager } = await import('@/opfs')
-          ;(await getWorkspaceManager()).invalidateRootMapCache(projectId)
-        } catch { /* manager not ready */ }
-        get().clearFilePaths()
-        toast.success(i18nText('projectRoots.nativeRootAdded', `Added "${root.displayName}" through local connection`, { name: root.displayName }))
-        return true
-      } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : 'unknown error'
-        toast.error(i18nText('projectRoots.nativeRootAddFailed', `Failed to add local connection: ${errorMessage}`, { error: errorMessage }))
-        return false
-      }
+      const picked = await get().pickNativeHostRoot()
+      if (!picked) return false
+      return get().bindNativeHostRoot(projectId, picked)
     },
 
     removeRoot: async (rootId: string) => {

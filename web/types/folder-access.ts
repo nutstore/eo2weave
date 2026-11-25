@@ -121,6 +121,19 @@ export interface RootInfo {
 }
 
 /**
+ * A native-host folder the user authorized but that is not bound to a project
+ * yet. The OS picker only produces a host-side scope; binding happens later
+ * (e.g. when a new-project dialog is submitted), so the project does not have
+ * to exist before the user makes an authorization decision.
+ */
+export interface NativeHostPickedRoot {
+  /** Host-side scope ID returned by `pick_folder`. */
+  scopeId: string
+  /** Folder display name reported by the host (absolute path on macOS/Linux). */
+  displayName: string
+}
+
+/**
  * Full store type
  */
 export interface FolderAccessStore extends FolderAccessActions {
@@ -185,7 +198,16 @@ export interface FolderAccessStore extends FolderAccessActions {
    * project keeps its configuration and relative paths.
    */
   repickRoot: (rootName: string) => Promise<boolean>
-  /** Add a root through the explicitly selected Native Host picker. */
+  /**
+   * Open the Native Host OS folder picker and authorize the folder WITHOUT
+   * binding it to a project. Returns the picked scope, or null when the user
+   * cancelled. Callers that already have a project should use
+   * `addNativeHostRoot`; callers that do not yet (new-project dialog) must bind
+   * the result later with `bindNativeHostRoot`.
+   */
+  pickNativeHostRoot: () => Promise<NativeHostPickedRoot | null>
+  /** Bind an already-authorized Native Host scope to a project. */
+  bindNativeHostRoot: (projectId: string, picked: NativeHostPickedRoot) => Promise<boolean>
   /** Add a root through the explicitly selected Native Host picker. `projectIdOverride` binds the new root to a specific project (e.g. the conversation's project for exec in-flow authorization); defaults to the active project. */
   addNativeHostRoot: (projectIdOverride?: string) => Promise<boolean>
   /** Remove a root by ID */

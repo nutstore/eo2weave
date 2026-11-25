@@ -15,6 +15,7 @@ import {
 } from '@creatorweave/ui'
 import { useT } from '@/i18n'
 import { useFolderAccessStore } from '@/store/folder-access.store'
+import type { NativeHostPickedRoot } from '@/types/folder-access'
 import { getRuntimeCapability } from '@/storage/runtime-capability'
 import { isNativeHostAvailable } from '@/opfs/native-disk/executor'
 
@@ -39,25 +40,27 @@ interface PickedFsAccess {
   handle: FileSystemDirectoryHandle
 }
 
-/** Native-host root names that were bound eagerly (name only — handle is on host). */
-type PickedNativeRoot = string
+/** Native-host folders authorized by the OS picker (bound at submit). */
+type PickedNativeRoot = NativeHostPickedRoot
 
 /**
  * New project dialog. Optional multi-folder authorization (N:M):
  *
  * - FS Access path: user can pick one or more local folders BEFORE the project
  *   exists; on submit, each handle is bound via folderAccessStore.setHandle.
- * - Native Host path: requires a project to bind to, so the dialog eagerly
- *   creates the project on the first native-host click. Each click opens the
- *   native OS folder picker (renderer → extension → Rust), and the resulting
- *   root is persisted immediately.
+ * - Native Host path: clicking opens the native OS folder picker (renderer →
+ *   extension → Rust) and authorizes the folder on the host. The host-side
+ *   scope is project-agnostic, so nothing is bound yet — the picked scope is
+ *   only remembered in dialog state and bound to the new project on submit.
+ *
+ * The project is therefore created exactly once, on submit, after every
+ * authorization prompt has been answered. Cancelling the dialog leaves no
+ * empty project and no project binding behind (a host-side scope the user
+ * authorized without binding is harmless: the next pick of the same folder
+ * reuses it, and `removeRoot` reference-counting never sees it).
  *
  * The dialog emits the new project id via `onProjectCreated` once folder
  * binding is done; the parent owns navigation.
- *
- * If the user cancels after eager project creation, the (empty/partial)
- * project is left behind — the user can find and rename/delete it later.
- * Cleanup is safer than automatic deletion (avoids silent data loss).
  */
 export function CreateProjectDialog({
   open,
@@ -71,11 +74,13 @@ export function CreateProjectDialog({
   const [pickedNative, setPickedNative] = useState<PickedNativeRoot[]>([])
   const [projectId, setProjectId] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
+  const [pickingNative, setPickingNative] = useState(false)
   const [composition, setComposition] = useState(false)
   const nameInputRef = useRef<HTMLInputElement>(null)
 
   const setHandle = useFolderAccessStore((s) => s.setHandle)
-  const addNativeHostRoot = useFolderAccessStore((s) => s.addNativeHostRoot)
+  const pickNativeHostRoot = useFolderAccessStore((s) => s.pickNativeHostRoot)
+  const bindNativeHostRoot = useFolderAccessStore((s) => s.bindNativeHostRoot)
   const supportsFsAccess = getRuntimeCapability().canPickDirectory
   const supportsNativeHost = isNativeHostAvailable()
   const supportsAnyPicker = supportsFsAccess || supportsNativeHost
@@ -88,6 +93,7 @@ export function CreateProjectDialog({
       setPickedNative([])
       setProjectId(null)
       setSubmitting(false)
+      setPickingNative(false)
       const id = window.setTimeout(() => {
         nameInputRef.current?.focus()
       }, 80)
@@ -125,39 +131,32 @@ export function CreateProjectDialog({
   }, [t])
 
   const handlePickNativeHost = useCallback(async () => {
-    if (submitting) return
-    // Native host needs a project to bind the scope to. Create one silently
-    // on the first click if it doesn't exist yet.
-    const pid = await ensureProject()
-    if (!pid) {
-      toast.error(t('projectHome.dialogs.pickFailed'))
-      return
-    }
-    // Snapshot known roots BEFORE the call so we can identify the new one after.
-    // `roots` here comes from the store (mutable via setProjectId later); reading
-    // it via getState() keeps the test mock aligned with the live store shape.
-    const before = new Set(
-      useFolderAccessStore.getState().roots.map((root) => root.name),
-    )
-    const ok = await addNativeHostRoot(pid)
-    if (!ok) return
-    // The store has already called loadRoots() — pick up any names we haven't
-    // seen yet (typically exactly one).
-    const freshRoots = useFolderAccessStore.getState().roots
-    const newlyAdded = freshRoots
-      .filter((root) => !before.has(root.name))
-      .map((root) => root.name)
-    setPickedNative((current) => {
-      const merged = [...current]
-      for (const name of newlyAdded) {
-        if (!merged.includes(name)) merged.push(name)
+    if (submitting || pickingNative) return
+    // Authorize first, bind later: the OS picker must run BEFORE the project
+    // exists so a cancelled authorization never leaves a stray empty project
+    // behind (the reported bug: project created, then the prompt appeared).
+    setPickingNative(true)
+    try {
+      const picked = await pickNativeHostRoot()
+      if (!picked) return
+      if (pickedNative.some((entry) => entry.displayName === picked.displayName)) {
+        toast.info(
+          t('projectHome.dialogs.folderAlreadyAdded', { name: picked.displayName }),
+        )
+        return
       }
-      return merged
-    })
-  }, [submitting, ensureProject, addNativeHostRoot, t])
+      setPickedNative((current) => [...current, picked])
+    } finally {
+      setPickingNative(false)
+    }
+  }, [submitting, pickingNative, pickedNative, pickNativeHostRoot, t])
 
   const handleRemoveFsFolder = useCallback((target: string) => {
     setPickedFs((current) => current.filter((entry) => entry.name !== target))
+  }, [])
+
+  const handleRemoveNativeFolder = useCallback((target: string) => {
+    setPickedNative((current) => current.filter((entry) => entry.displayName !== target))
   }, [])
 
   const handleClose = useCallback(() => {
@@ -176,8 +175,8 @@ export function CreateProjectDialog({
         setSubmitting(false)
         return
       }
-      // Bind FS Access handles. Native host roots are already bound from each
-      // click. setHandle is fire-and-persist (IndexedDB + project_roots row).
+      // Bind FS Access handles. setHandle is fire-and-persist (IndexedDB +
+      // project_roots row).
       for (const entry of pickedFs) {
         try {
           await setHandle(pid, entry.handle)
@@ -188,13 +187,24 @@ export function CreateProjectDialog({
           )
         }
       }
+      // Bind the native-host scopes authorized during this dialog session.
+      for (const entry of pickedNative) {
+        try {
+          await bindNativeHostRoot(pid, entry)
+        } catch (error) {
+          console.error(
+            `[CreateProjectDialog] Failed to bind native-host root "${entry.displayName}":`,
+            error,
+          )
+        }
+      }
       onProjectCreated(pid)
       onOpenChange(false)
     } catch (error) {
       console.error('[CreateProjectDialog] Create failed:', error)
       setSubmitting(false)
     }
-  }, [name, pickedFs, submitting, ensureProject, setHandle, onProjectCreated, onOpenChange])
+  }, [name, pickedFs, pickedNative, submitting, ensureProject, setHandle, bindNativeHostRoot, onProjectCreated, onOpenChange])
 
   const canSubmit = name.trim().length > 0 && !submitting
   const hasPicks = pickedFs.length > 0 || pickedNative.length > 0
@@ -277,7 +287,7 @@ export function CreateProjectDialog({
                     <button
                       type="button"
                       onClick={() => void handlePickNativeHost()}
-                      disabled={submitting}
+                      disabled={submitting || pickingNative}
                       className="flex items-center justify-center gap-2 rounded-md border border-dashed border-border bg-card px-3 py-2 text-sm text-secondary transition-colors hover:border-primary/40 hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30 disabled:opacity-60"
                       title={t('projectHome.dialogs.nativeHostHint')}
                     >
@@ -309,16 +319,27 @@ export function CreateProjectDialog({
                         </button>
                       </li>
                     ))}
-                    {pickedNative.map((rootName) => (
+                    {pickedNative.map((entry) => (
                       <li
-                        key={`nh:${rootName}`}
+                        key={`nh:${entry.scopeId}`}
                         className="flex items-center gap-2 rounded-md border border-border bg-card px-2.5 py-1.5 text-sm text-secondary"
                       >
                         <HardDrive className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                        <span className="min-w-0 flex-1 truncate">{rootName}</span>
+                        <span className="min-w-0 flex-1 truncate">{entry.displayName}</span>
                         <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
                           {t('projectHome.dialogs.nativeHostBadge')}
                         </span>
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveNativeFolder(entry.displayName)}
+                          disabled={submitting}
+                          aria-label={t('projectHome.dialogs.removeFolder', {
+                            name: entry.displayName,
+                          })}
+                          className="grid h-5 w-5 shrink-0 place-items-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30 disabled:opacity-60"
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </button>
                       </li>
                     ))}
                   </ul>
