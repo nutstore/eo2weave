@@ -20,7 +20,7 @@ import { getSubagentContinuation, onSubagentCompletionReady, recordAsyncSubagent
  */
 
 import { toast } from 'sonner'
-import { isHumanUserMessage, isConversationUserMessage, type Conversation, type Message, type ToolCall, type ConversationStatus, type ContextWindowUsage, createRunChangesMessage, createUserMessage } from '@/agent/message-types'
+import { isHumanUserMessage, isConversationUserMessage, type Conversation, type Message, type ToolCall, type ConversationStatus, type ContextWindowUsage, createRunChangesMessage } from '@/agent/message-types'
 import { resolveConversationAgentId } from '@/agent/conversation-agent-routing'
 import { emitThinkingStart, emitThinkingDelta, emitCompressionEvent, emitToolStart, emitComplete, emitError } from '@/streaming-bus'
 import { useConversationContextStore } from './conversation-context.store'
@@ -47,6 +47,7 @@ import { getAgentModeForWorkspace } from './workspace-preferences.store'
 import type { LLMProviderType } from '@/agent/providers/types'
 import type { SubagentTaskNotification, SubagentStepNotification } from '@/agent/tools/tool-types'
 import { persistConversationMeta, persistMessageReplace } from './conversation-persist'
+import { consumeQueuedMessages } from './consume-queued-messages'
 
 /**
  * zustand setter as captured by the store creator closure (immer middleware:
@@ -2668,92 +2669,13 @@ async function runAgentBody(
       }
 
       // ── Consume queued messages ──
-      // After a successful (idle) run, check if messages were queued during execution.
-      // If so, dequeue the next one and trigger a new agent run.
-      const finalStatus = get().conversations.find((c) => c.id === conversationId)?.status
-      if (finalStatus === 'idle') {
-        const pendingMCP = useConversationRuntimeStore.getState().getQueuedMessage(conversationId, 0)
-        if (pendingMCP?.mcpTaskId) {
-          try {
-            const { continueQueuedMCPTask } = await import('@/mcp/continue-task')
-            await continueQueuedMCPTask(pendingMCP.mcpTaskId, pendingMCP.text)
-          } catch (error) {
-            console.error('[MCP] Queued result delivery failed:', error)
-            toast.error(error instanceof Error ? error.message : String(error))
-          }
-          return
-        }
-        const nextMsg = useConversationRuntimeStore.getState().dequeueMessage(conversationId)
-        if (nextMsg) {
-          if (nextMsg.rerunOnly) {
-            // Re-run trigger from an overlapping dispatch: its user message is
-            // ALREADY in conv.messages, so start the follow-up turn directly —
-            // creating another user message would duplicate it.
-            queueMicrotask(() => {
-              get().runAgent(
-                conversationId,
-                providerType,
-                modelName,
-                maxTokens,
-                null,
-                nextMsg.agentOverrideId ?? null,
-                nextMsg.background ? { background: true } : undefined,
-              )
-            })
-          } else {
-            // A caller that persisted this message at enqueue time owns its
-            // identity (id AND timestamp): reuse that record instead of minting
-            // a second copy of the same prompt. Content and assets come from the
-            // queue entry, so a later edit still reaches the turn.
-            const userMsg = nextMsg.persistedMessage
-              ? { ...nextMsg.persistedMessage, content: nextMsg.text, assets: nextMsg.assets ?? nextMsg.persistedMessage.assets }
-              : createUserMessage(nextMsg.text, nextMsg.assets, nextMsg.pageContext, {
-                  contentParts: nextMsg.contentParts,
-                  readImageHandoff: nextMsg.readImageHandoff,
-                })
-            const currentConv = get().conversations.find((c) => c.id === conversationId)
-            if (currentConv) {
-              // Only append when the transcript does not already carry it —
-              // appending unconditionally duplicates the prompt and rewrites
-              // the timestamp stored at enqueue time. When it IS already
-              // there, that record is the enqueue-time copy: an edit made
-              // through the queue card never reached it, so replace the
-              // content before the turn reads the transcript.
-              const existingIndex = currentConv.messages.findIndex((m) => m.id === userMsg.id)
-              if (existingIndex === -1) {
-                get().updateMessages(conversationId, [...currentConv.messages, userMsg])
-              } else {
-                const existing = currentConv.messages[existingIndex]
-                // An edit can touch only the attachments: the queue card edits
-                // text and assets separately. Compare asset ids rather than the
-                // objects themselves (an asset can carry OCR base64).
-                const sameAssets =
-                  (existing.assets ?? []).map((a) => a.id).join() ===
-                  (userMsg.assets ?? []).map((a) => a.id).join()
-                if (existing.content !== userMsg.content || !sameAssets) {
-                  const replaced = currentConv.messages.slice()
-                  replaced[existingIndex] = { ...existing, content: userMsg.content, assets: userMsg.assets }
-                  get().updateMessages(conversationId, replaced)
-                }
-              }
-              // Schedule the next run on the next microtask to avoid re-entrancy.
-              // FIX (parallel isolation): Pass null — runAgent now resolves the
-              // directoryHandle from conversationId internally, so the global
-              // active-project pointer can no longer cross-contaminate this run.
-              queueMicrotask(() => {
-                get().runAgent(
-                  conversationId,
-                  providerType,
-                  modelName,
-                  maxTokens,
-                  null,
-                  nextMsg.agentOverrideId ?? null,
-                  nextMsg.background ? { background: true } : undefined,
-                )
-              })
-            }
-          }
-        }
+      if (get().conversations.find((c) => c.id === conversationId)?.status === 'idle') {
+        await consumeQueuedMessages({
+          conversationId, providerType, modelName, maxTokens,
+          getConversation: () => get().conversations.find((c) => c.id === conversationId),
+          updateMessages: (messages) => get().updateMessages(conversationId, messages),
+          runAgent: get().runAgent,
+        })
       }
 }
 

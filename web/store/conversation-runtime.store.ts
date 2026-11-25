@@ -67,6 +67,34 @@ export interface QueuedMessage {
 /** Maximum queued messages per conversation */
 const MAX_QUEUE_SIZE = 20
 
+/**
+ * Maximum number of queued messages merged into ONE follow-up turn.
+ * Messages beyond the cap stay queued and are delivered by the next turn.
+ */
+export const MAX_QUEUE_BATCH_SIZE = 10
+
+/**
+ * Maximum total message text (characters) merged into one follow-up turn.
+ * Counted on the raw text only — attachments ride along with their message.
+ */
+export const MAX_QUEUE_BATCH_CHARS = 6000
+
+/**
+ * Everything the queue hands to a single follow-up turn.
+ *
+ * `messages` are the real user messages to append to the transcript (never
+ * `rerunOnly` triggers, whose content already lives in the transcript).
+ * `rerunOnly` reports whether at least one trigger was folded into this batch,
+ * so a batch made ONLY of triggers still starts a turn (exactly the old
+ * one-trigger-per-turn behavior, minus the extra turns).
+ */
+export interface QueuedMessageBatch {
+  messages: QueuedMessage[]
+  rerunOnly: boolean
+  /** Queue entries removed by this batch (messages + folded triggers). */
+  consumed: number
+}
+
 // Enable Immer Map/Set support
 enableMapSet()
 
@@ -212,6 +240,14 @@ export interface ConversationRuntimeState {
   // ─── Message queue actions ───
   enqueueMessage: (convId: string, message: QueuedMessage) => { enqueued: boolean; position: number }
   dequeueMessage: (convId: string) => QueuedMessage | null
+  /**
+   * Drain the head of the queue as one follow-up turn: every real message that
+   * is bound for the same run (same agent override / visibility) plus any
+   * `rerunOnly` triggers sitting between them. Returns null when there is
+   * nothing to deliver, or when the head is an MCP continuation (that entry
+   * owns a separate delivery path and must be dequeued one at a time).
+   */
+  dequeueBatch: (convId: string) => QueuedMessageBatch | null
   getQueueDepth: (convId: string) => number
   clearQueue: (convId: string) => void
   removeQueuedMessage: (convId: string, index: number) => void
@@ -403,6 +439,44 @@ export const useConversationRuntimeStore = create<ConversationRuntimeState>()(
         }
       })
       return item
+    },
+
+    dequeueBatch: (convId: string) => {
+      const queue = get().pendingMessageQueues.get(convId)
+      if (!queue?.length || queue[0].mcpTaskId) return null
+
+      const agentOverrideId = queue[0].agentOverrideId ?? null
+      const background = Boolean(queue[0].background)
+      const messages: QueuedMessage[] = []
+      let rerunOnly = false
+      let consumed = 0
+      let chars = 0
+
+      for (const item of queue) {
+        if (consumed >= MAX_QUEUE_BATCH_SIZE || item.mcpTaskId ||
+          (item.agentOverrideId ?? null) !== agentOverrideId || Boolean(item.background) !== background) {
+          break
+        }
+        if (!item.rerunOnly && messages.length > 0 && chars + item.text.length > MAX_QUEUE_BATCH_CHARS) {
+          break
+        }
+        consumed++
+        if (item.rerunOnly) {
+          rerunOnly = true
+        } else {
+          messages.push(item)
+          chars += item.text.length
+        }
+      }
+
+      set((state) => {
+        const q = state.pendingMessageQueues.get(convId)
+        if (q) {
+          q.splice(0, consumed)
+          if (q.length === 0) state.pendingMessageQueues.delete(convId)
+        }
+      })
+      return { messages, rerunOnly, consumed }
     },
 
     getQueueDepth: (convId: string) => {
