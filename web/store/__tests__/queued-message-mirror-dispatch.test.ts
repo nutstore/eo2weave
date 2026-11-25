@@ -76,4 +76,26 @@ describe('queued message transcript mirror dispatch', () => {
       expect.objectContaining({ content: 'edited text', assets: [] }),
     )
   })
+
+  it('keeps attachments that live only on the persisted record across a text-only edit', () => {
+    const asset = { id: 'asset-1', name: 'shot.png', mimeType: 'image/png', size: 12 } as never
+    const persisted = createUserMessage('prompt with attachment')
+    persisted.assets = [asset]
+    const runtime = useConversationRuntimeStore.getState()
+    runtime.enqueueMessage(conversationId, {
+      text: 'prompt with attachment',
+      enqueuedAt: 1,
+      persistedMessage: persisted,
+    })
+
+    runtime.updateQueuedMessage(conversationId, 0, { text: 'edited text' })
+
+    // The queue entry never carried `assets` itself, so the mirrored record
+    // must fall back to the persisted record or the edit would drop them.
+    expect(mirror.replace).toHaveBeenCalledWith(
+      conversationId,
+      expect.objectContaining({ content: 'edited text', assets: [asset] }),
+    )
+    expect(runtime.getQueuedMessage(conversationId, 0)?.persistedMessage?.assets).toEqual([asset])
+  })
 })

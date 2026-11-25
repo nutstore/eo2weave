@@ -515,7 +515,10 @@ export const useConversationRuntimeStore = create<ConversationRuntimeState>()(
         ? {
             ...entry.persistedMessage,
             content: patch.text ?? entry.text,
-            assets: patch.assets ?? entry.assets,
+            // `entry.assets` is only set by a patch that carried attachments;
+            // an app-tool entry keeps them on the persisted record alone, so a
+            // text-only edit must not clear them.
+            assets: patch.assets ?? entry.assets ?? entry.persistedMessage.assets,
           }
         : null
       set((state) => {
