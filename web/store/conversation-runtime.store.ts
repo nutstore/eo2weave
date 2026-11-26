@@ -129,8 +129,9 @@ export interface ConversationRuntime {
   error: string | null
   /**
    * Error string the user manually dismissed (issue #370). The banner hides
-   * while `error === dismissedError`; a NEW failure (different string) shows
-   * a fresh banner. Reset to null whenever the error state changes.
+   * while `error === dismissedError`; a NEW run (or a new failure string)
+   * shows a fresh banner. Trimmed on both sides so whitespace never keeps a
+   * dismissed banner on screen.
    */
   dismissedError: string | null
   /** Active run id for guarding stale callbacks */
@@ -232,8 +233,8 @@ export interface ConversationRuntimeState {
   // ─── Runtime state mutations ───
   setConversationStatus: (convId: string, status: ConversationStatus) => void
   setConversationError: (convId: string, error: string | null) => void
-  /** Hide the error banner for the CURRENT error string (issue #370). A new failure (different string) shows a fresh banner. */
-  dismissConversationError: (convId: string) => void
+  /** Hide the banner for the given error string (issue #370). Any other failure string still shows. */
+  dismissConversationError: (convId: string, error: string | null) => void
   resetConversationState: (convId: string) => void
   collectAssets: (convId: string, assets: AssetMeta[]) => void
 
@@ -327,18 +328,18 @@ export const useConversationRuntimeStore = create<ConversationRuntimeState>()(
           state.runtimes.set(convId, rt)
         }
         rt.error = error
-        // A new error (different string) always shows a fresh banner (#370).
+        // Assigning an error always clears the dismissal marker (#370).
         rt.dismissedError = null
         rt.status = error ? 'error' : 'idle'
       })
     },
 
-    dismissConversationError: (convId: string) => {
+    dismissConversationError: (convId: string, error: string | null) => {
       set((state) => {
         const rt = state.runtimes.get(convId)
-        // Hide the banner for the current error string only; the failed turn
-        // in the transcript is untouched.
-        if (rt) rt.dismissedError = rt.error
+        // Hide the banner for this error string only; the failed turn in the
+        // transcript is untouched.
+        if (rt) rt.dismissedError = error?.trim() || null
       })
     },
 

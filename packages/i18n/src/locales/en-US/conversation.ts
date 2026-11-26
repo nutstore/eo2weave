@@ -258,6 +258,7 @@ truncated: "Turn truncated — the response hit the length limit.",
       network: "Network error — could not reach the model provider. Check your connection and try again.",
       aborted: "Generation stopped",
       showDetails: "Show details",
+      dismiss: "Dismiss",
     },
     // Iteration limit
     iterationLimit: {

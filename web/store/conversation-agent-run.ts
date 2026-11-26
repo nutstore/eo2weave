@@ -613,6 +613,8 @@ async function runAgentBody(
           rt.activeRunId = runId
           rt.status = 'pending'
           rt.error = null
+          // A new run always shows its own failure, even with an identical message (#370).
+          rt.dismissedError = null
           rt.currentToolCall = null
           rt.activeToolCalls = []
           rt.streamingToolArgs = ''

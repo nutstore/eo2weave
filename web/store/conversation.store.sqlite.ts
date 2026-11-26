@@ -2081,6 +2081,8 @@ export const useConversationStoreSQLite = create<ConversationState>()(
         rt.activeRunId = runId
         rt.status = 'pending'
         rt.error = null
+        // A new run always shows its own failure, even with an identical message (#370).
+        rt.dismissedError = null
         rt.draftAssistant = {
           reasoning: '',
           content: '',

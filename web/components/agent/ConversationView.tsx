@@ -17,6 +17,7 @@ import { AlertTriangle, RefreshCw, WifiOff, KeyRound, Wallet, X } from 'lucide-r
 import { toast } from 'sonner'
 import { useT, useLocale } from '@/i18n'
 import { getNutstoreAIConsoleURL } from '@/lib/jianguoyun-ai-console'
+import { resolveErrorBanner } from '@/lib/conversation-error-banner'
 import { presentLlmError } from './llm-error'
 import { ErrorBoundary } from '@/components/error/ErrorBoundary'
 import { AgentRichInput, type AgentRichInputHandle } from './AgentRichInput'
@@ -141,7 +142,7 @@ export function ConversationView({
     draftTextToRestore, onDraftRestored,
     allAgents, activeAgentId, setActiveAgent, createAgent, deleteAgent, mentionAgents,
     convId, activeMessages, sendScrollRequest,
-    conversationError, activeContextWindowUsage,
+    conversationError, dismissedError, activeContextWindowUsage,
     isProcessing, status, suggestedFollowUp, toolResults,
     hasApiKey, enableThinking, thinkingLevel, setEnableThinking, setThinkingLevel,
     agentMode, setAgentMode,
@@ -468,22 +469,23 @@ export function ConversationView({
       </div>
 
         {(() => {
-          // Issue #370: the banner can be manually dismissed. `conversationError`
-          // (runtime store) hides while `dismissedError` matches it; the
-          // persisted-retry variant has no runtime error to key on, so it is
-          // always shown fresh (a new failed turn = a new banner).
-          if (!convId) return null
-          const rt = useConversationRuntimeStore.getState().runtimes.get(convId)
-          const showPersisted = !isProcessing && hasPersistedRetryError
-          const bannerError = conversationError ?? (showPersisted ? persistedRetryError : null)
-          const dismissible = Boolean(conversationError)
-          const dismissed = dismissible && rt?.dismissedError != null && rt.dismissedError === conversationError
-          if (!bannerError || (dismissible && dismissed)) return null
+          // Issue #370: the banner can be manually dismissed. `dismissedError`
+          // is subscribed through useActiveConversation, so clicking × hides
+          // the banner immediately; it only hides the string it was clicked on,
+          // and a new run starts with a clean marker (reset at run start).
+          const bannerError = resolveErrorBanner({
+            conversationError,
+            persistedRetryError: !isProcessing && hasPersistedRetryError ? persistedRetryError : null,
+            dismissedError,
+          })
+          if (!convId || !bannerError) return null
           return (
             <ConversationErrorBanner
               error={bannerError}
               onRetry={handleRetry}
-              onDismiss={dismissible ? () => useConversationRuntimeStore.getState().dismissConversationError(convId) : undefined}
+              onDismiss={() =>
+                useConversationRuntimeStore.getState().dismissConversationError(convId, bannerError)
+              }
             />
           )
         })()}
@@ -715,7 +717,7 @@ const ConversationErrorBanner = memo(function ConversationErrorBanner({
 }: {
   error: string
   onRetry?: () => void
-  /** Hide the banner for this error (issue #370); omitted when there is nothing to dismiss. */
+  /** Hide the banner for this error (issue #370). */
   onDismiss?: () => void
 }) {
   const t = useT()
