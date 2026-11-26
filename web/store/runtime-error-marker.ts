@@ -23,8 +23,15 @@ export function markRuntimeError(
  * the entry while the failed turn it hides stays in the transcript: deleting
  * the entry would revive a dismissed banner on the next open. Drop the
  * message-sized buffers instead and keep the (now tiny) entry.
+ *
+ * The error text goes too: the marker alone keeps the banner closed (the
+ * persisted failed turn supplies the text again on the next open), and a
+ * provider error can carry an unbounded response body. Same for the
+ * iteration-limit flag, which belongs to the run that already ended.
  */
 export function stripRuntimePayload(rt: ConversationRuntime): void {
+  rt.error = null
+  rt.iterationLimitReached = null
   rt.streamingContent = ''
   rt.streamingReasoning = ''
   rt.isContentStreaming = false

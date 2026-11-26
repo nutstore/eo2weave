@@ -24,6 +24,7 @@ describe('stripRuntimePayload (#370)', () => {
     rt.status = 'idle'
     rt.error = 'the model request failed'
     rt.dismissedError = 'the model request failed'
+    rt.iterationLimitReached = 25
     rt.streamingContent = 'partial answer'
     rt.completedContent = 'a whole assistant turn'
     rt.completedReasoning = 'long reasoning'
@@ -35,7 +36,10 @@ describe('stripRuntimePayload (#370)', () => {
 
     // The marker survives — it is what keeps the evicted conversation's banner closed.
     expect(rt.dismissedError).toBe('the model request failed')
-    expect(rt.error).toBe('the model request failed')
+    // The error text itself is released: the persisted turn supplies it again.
+    expect(rt.error).toBeNull()
+    // The finished run's iteration-limit warning must not resurface on reopen.
+    expect(rt.iterationLimitReached).toBeNull()
     expect(rt.status).toBe('idle')
     // Payload is gone, which is the point of eviction.
     expect(rt.streamingContent).toBe('')
