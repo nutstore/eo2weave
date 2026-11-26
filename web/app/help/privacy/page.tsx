@@ -28,6 +28,13 @@ const englishMetadata: Metadata = {
     title: 'Privacy Policy — EO2Weave',
     description: 'What the EO2Weave website and browser extension process, and when data leaves your device.',
   },
+  // Twitter cards do NOT inherit the Open Graph block, so without this the root
+  // layout's local-first description is used for this page's previews too.
+  twitter: {
+    card: 'summary_large_image',
+    title: 'Privacy Policy — EO2Weave',
+    description: 'What the EO2Weave website and browser extension process, and when data leaves your device.',
+  },
   robots: { index: true, follow: true },
 }
 
@@ -40,6 +47,11 @@ const chineseMetadata: Metadata = {
   openGraph: {
     type: 'website',
     url: '/help/privacy',
+    title: '隐私政策 — 怡氧®AI',
+    description: '了解怡氧®AI 如何处理账号、对话与文件内容、第三方大模型及数据统计等信息。',
+  },
+  twitter: {
+    card: 'summary_large_image',
     title: '隐私政策 — 怡氧®AI',
     description: '了解怡氧®AI 如何处理账号、对话与文件内容、第三方大模型及数据统计等信息。',
   },

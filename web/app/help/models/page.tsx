@@ -24,6 +24,13 @@ const chineseMetadata: Metadata = {
     title: '第三方大模型及算法备案信息说明 — 怡氧®AI',
     description: '怡氧®AI 接入的第三方大模型及其算法备案信息。',
   },
+  // Twitter cards do NOT inherit the Open Graph block; without this the root
+  // layout's local-first description is used for this notice's previews too.
+  twitter: {
+    card: 'summary_large_image',
+    title: '第三方大模型及算法备案信息说明 — 怡氧®AI',
+    description: '怡氧®AI 接入的第三方大模型及其算法备案信息。',
+  },
   robots: { index: true, follow: true },
 }
 
