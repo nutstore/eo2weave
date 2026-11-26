@@ -336,10 +336,17 @@ export const useConversationRuntimeStore = create<ConversationRuntimeState>()(
 
     dismissConversationError: (convId: string, error: string | null) => {
       set((state) => {
-        const rt = state.runtimes.get(convId)
+        let rt = state.runtimes.get(convId)
+        if (!rt) {
+          // The persisted-turn banner can render right after a reload, before
+          // anything else creates the runtime entry — the dismissal still has
+          // to stick, so create it here like setConversationError does.
+          rt = createEmptyRuntime()
+          state.runtimes.set(convId, rt)
+        }
         // Hide the banner for this error string only; the failed turn in the
         // transcript is untouched.
-        if (rt) rt.dismissedError = error?.trim() || null
+        rt.dismissedError = error?.trim() || null
       })
     },
 

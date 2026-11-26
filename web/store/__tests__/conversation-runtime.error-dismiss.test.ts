@@ -31,11 +31,10 @@ describe('dismissConversationError (#370)', () => {
 
   it('dismisses a persisted-turn error that has no runtime error behind it', () => {
     const store = useConversationRuntimeStore.getState()
-    // The persisted-turn fallback renders while the runtime error is already
-    // cleared, so the dismissal must key on the displayed string instead.
-    store.setConversationError(convId, null)
-    store.dismissConversationError(convId, 'The model request failed.')
-    const rt = useConversationRuntimeStore.getState().runtimes.get(convId)
+    // After a reload the persisted-turn banner can render before anything else
+    // creates the runtime entry, so the dismissal must create it.
+    store.dismissConversationError(convId + '-no-entry', 'The model request failed.')
+    const rt = useConversationRuntimeStore.getState().runtimes.get(convId + '-no-entry')
     expect(rt?.error).toBeNull()
     expect(rt?.dismissedError).toBe('The model request failed.')
   })
