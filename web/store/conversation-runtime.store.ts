@@ -13,7 +13,7 @@
  */
 
 import { create } from 'zustand'
-import { markRuntimeError } from './runtime-error-marker'
+import { markRuntimeError } from '@/store/runtime-error-marker'
 import { immer } from 'zustand/middleware/immer'
 import { enableMapSet } from 'immer'
 import type {
