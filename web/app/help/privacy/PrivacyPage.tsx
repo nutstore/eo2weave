@@ -33,8 +33,8 @@ const copy: Record<Locale, Copy> = {
     documentLabel: 'Privacy, by design',
     title: 'Your work stays yours.',
     lead:
-      'EO2Weave is built around local processing, explicit actions, and controls you can revoke. This policy explains what the EO2Weave websites and browser extension process and when data may leave your device.',
-    appliesTo: 'EO2Weave websites and browser extension',
+      'EO2Weave is built around local processing, explicit actions, and controls you can revoke. This policy explains what the EO2Weave website and browser extension process and when data may leave your device.',
+    appliesTo: 'EO2Weave website and browser extension',
     updated: 'Last updated',
     updatedValue: 'August 26, 2026',
     localLabel: 'Operating model',
@@ -216,7 +216,7 @@ const copy: Record<Locale, Copy> = {
               <li><strong>使用内置模型。</strong>您登录坚果云账号后，可以选择账号对应的内置第三方大模型。发起任务时，完成任务所需的指令、对话上下文、网页或文件内容会发送给所选模型的服务方，用于处理您的请求并返回结果。</li>
               <li><strong>自行配置模型服务商。</strong>您也可以填写 API Key 使用预置服务商，或自定义服务商。发起任务时，完成任务所需的内容会发送至您配置的服务方或接口，以处理您的请求并返回结果。</li>
             </ul>
-            <p>有关本产品接入的第三方大模型及相关算法备案信息，您可以查阅<Link href="/help/models/">《怡氧®AI 第三方大模型及算法备案信息说明》</Link>。</p>
+            <p>有关本产品接入的第三方大模型及相关算法备案信息，您可以查阅<Link href="/help/models">《怡氧®AI 第三方大模型及算法备案信息说明》</Link>。</p>
             <p>您自行接入的模型、网站或工具可能按照其自身的隐私政策处理收到的信息。使用前请核对服务商、接口地址及其规则。我们会就本产品自身参与的信息处理履行相应保护义务；对于由我们接入并向其提供个人信息的合作方，我们会依法履行告知、合同管理及必要的同意程序。有关模型和合作方的信息，可通过产品展示的模型或服务商说明了解。</p>
             <p>API Key 是访问模型服务的凭证，请妥善保管，并注意核对您填写的服务商及接口地址。我们仅为实现您选择的连接和调用功能处理相关配置，并采取与其风险相适应的保护措施。</p>
           </>
