@@ -14,7 +14,7 @@ export const projectHome = {
       title: "Start Creating Here",
       description:
         "Chat with your files in natural language in your local AI workspace.",
-      descriptionSuffix: "Your data stays on your device.",
+      descriptionSuffix: "Files stay on your device; task content goes to your model provider.",
       projectCount: "{count} projects",
       workspaceCount: "{count} conversations",
       docsHub: "Docs Hub",

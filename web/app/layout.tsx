@@ -30,7 +30,7 @@ const metadataByRegion: Metadata = IS_CN_BUILD
         type: 'website',
         siteName: '怡氧®AI',
         title: '怡氧®AI — AI 原生创作工作台',
-        description: '本地优先的文件、知识工作流与多智能体编排。文件保存在用户本机，PWA 离线可用；发起任务时请求内容会发送至您配置的模型服务商处理。',
+        description: '本地优先的文件、知识工作流与多智能体编排。文件保存在用户本机，PWA 离线可用；发起任务时请求内容会发送至模型服务方（账号内置模型或您自行配置的服务商）处理。',
         url: SITE_URL,
         locale: 'zh_CN',
       },
@@ -58,7 +58,7 @@ export const metadata: Metadata = {
     card: 'summary_large_image',
     title: IS_CN_BUILD ? '怡氧®AI — AI 原生创作工作台' : 'EO2Weave — AI-native creator workspace',
     description: IS_CN_BUILD
-      ? '本地优先的文件、知识工作流与多智能体编排。文件保存在用户本机，PWA 离线可用；发起任务时请求内容会发送至您配置的模型服务商处理。'
+      ? '本地优先的文件、知识工作流与多智能体编排。文件保存在用户本机，PWA 离线可用；发起任务时请求内容会发送至模型服务方（账号内置模型或您自行配置的服务商）处理。'
       : 'Local-first files, knowledge workflows, and multi-agent orchestration. Your files stay on your machine; task content is sent to the model provider you configure. PWA offline-ready.',
   },
   ...metadataByRegion,

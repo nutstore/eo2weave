@@ -13,7 +13,7 @@ export const projectHome = {
       title: "ここから創作を始める",
       description:
         "ローカル AI ワークスペースで、自然言語でファイルと会話しましょう。",
-      descriptionSuffix: "データはあなたのデバイスに残ります。",
+      descriptionSuffix: "ファイルはローカルに保存され、リクエストはモデルプロバイダーに送信されます。",
       projectCount: "{count} プロジェクト",
       workspaceCount: "{count} 会話",
       docsHub: "ドキュメントセンター",
