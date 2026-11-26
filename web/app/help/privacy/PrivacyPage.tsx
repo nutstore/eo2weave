@@ -59,7 +59,7 @@ const copy: Record<Locale, Copy> = {
     contents: 'On this page',
     intro: (
       <>
-        This policy applies to the EO2Weave services available at weave.eo2suite.cn and weave.eo2suite.com (the “websites”), as well as the EO2Weave browser extension (the “extension”). Together, they are referred to as the “services”. In this policy, “EO2Weave”, “we”, and “us” refer to the provider of these services. We do not operate a server that receives your conversations, files, or browsing activity.
+        This policy applies to the EO2Weave services available at weave.eo2suite.com (the “website”), as well as the EO2Weave browser extension (the “extension”). Together, they are referred to as the “services”. In this policy, “EO2Weave”, “we”, and “us” refer to the provider of these services. We do not operate a server that receives your conversations, files, or browsing activity. The domestic deployment at weave.eo2suite.cn publishes its own policy, which describes the account-backed model service and analytics it operates.
       </>
     ),
     sections: [
