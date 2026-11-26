@@ -13,7 +13,7 @@ export const projectHome = {
       badge: "本地优先",
       title: "创作从这里开始",
       description: "在本地 AI 创作工坊中，用自然语言与你的文件对话。",
-      descriptionSuffix: "文件保存在你的设备，任务请求发送至模型服务方。",
+      descriptionSuffix: "文件保存在你的设备，任务内容会发送至模型服务方。",
       projectCount: "{count} 项目",
       workspaceCount: "{count} 对话",
       docsHub: "文档中心",
