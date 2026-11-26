@@ -1,5 +1,5 @@
 import Link from 'next/link'
-import styles from '../privacy/privacy-page.module.css'
+import styles from '@/app/help/privacy/privacy-page.module.css'
 
 type Locale = 'zh'
 

@@ -25,7 +25,7 @@ const englishMetadata: Metadata = {
 
 const chineseMetadata: Metadata = {
   title: '隐私政策 — 怡氧®AI',
-  description: '了解怡氧®AI 网站和浏览器扩展如何处理数据、保护本地文件，以及如何让你管理网站工具授权。',
+  description: '了解怡氧®AI 如何处理账号、对话与文件内容、第三方大模型及数据统计等信息，以及你如何管理个人信息。',
   alternates: {
     canonical: '/help/privacy/',
   },

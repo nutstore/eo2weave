@@ -158,27 +158,29 @@ const copy: Record<Locale, Copy> = {
           <>
             <p><strong>本产品支持两种使用方式</strong>：通过第三方账号（如坚果云账号）登录，登录后可使用账号对应的内置模型，无需自行配置；或<strong>不登录账号，自行配置模型服务商（如填写 API Key）</strong>后使用。我们仅收集实现相应功能所必需的信息。</p>
             <p>当您选择通过第三方账号登录时，我们会在您明确授权后，从该第三方账号服务方获取以下必要信息：</p>
-            <table>
-              <thead>
-                <tr>
-                  <th>信息类型</th>
-                  <th>具体内容</th>
-                  <th>用途</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <td>账号标识</td>
-                  <td>用于登录校验的账号标识</td>
-                  <td>验证您的身份、维持登录状态</td>
-                </tr>
-                <tr>
-                  <td>服务权益信息</td>
-                  <td>积分、额度等</td>
-                  <td>关联并管理您可使用的模型与额度</td>
-                </tr>
-              </tbody>
-            </table>
+            <div className={styles.tableScroll}>
+              <table>
+                <thead>
+                  <tr>
+                    <th>信息类型</th>
+                    <th>具体内容</th>
+                    <th>用途</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>账号标识</td>
+                    <td>用于登录校验的账号标识</td>
+                    <td>验证您的身份、维持登录状态</td>
+                  </tr>
+                  <tr>
+                    <td>服务权益信息</td>
+                    <td>积分、额度等</td>
+                    <td>关联并管理您可使用的模型与额度</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
             <p>第三方账号的注册、密码管理和注销由相应账号服务方按照其规则处理。</p>
           </>
         ),

@@ -1,6 +1,6 @@
 import type { Metadata } from 'next'
 import { notFound } from 'next/navigation'
-import { ModelsPage } from './ModelsPage'
+import { ModelsPage } from '@/app/help/models/ModelsPage'
 
 /**
  * Domestic-only route — build-time inlined.
@@ -21,7 +21,11 @@ const chineseMetadata: Metadata = {
   robots: { index: true, follow: true },
 }
 
-export const metadata: Metadata = chineseMetadata
+// The notification is domestic-only: never advertise it through metadata the
+// international build could serve on its 404 response.
+export const metadata: Metadata = IS_CN_BUILD
+  ? chineseMetadata
+  : { title: 'Not Found', robots: { index: false, follow: false } }
 
 export default function ModelsRoute() {
   if (!IS_CN_BUILD) notFound()
