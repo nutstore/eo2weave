@@ -18,7 +18,7 @@ const englishMetadata: Metadata = {
   title: 'Privacy Policy — EO2Weave',
   description: 'How the EO2Weave websites and browser extension process data, protect local files, and give you control over website tools.',
   alternates: {
-    canonical: '/help/privacy/',
+    canonical: '/help/privacy',
   },
   robots: { index: true, follow: true },
 }
@@ -27,7 +27,7 @@ const chineseMetadata: Metadata = {
   title: '隐私政策 — 怡氧®AI',
   description: '了解怡氧®AI 如何处理账号、对话与文件内容、第三方大模型及数据统计等信息，以及你如何管理个人信息。',
   alternates: {
-    canonical: '/help/privacy/',
+    canonical: '/help/privacy',
   },
   robots: { index: true, follow: true },
 }
