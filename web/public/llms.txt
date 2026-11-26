@@ -1,16 +1,19 @@
 # EO2Weave (怡氧®AI)
 
 > AI-native creator workspace with local-first files, knowledge workflows, and
-> multi-agent orchestration. Runs entirely in the browser as a PWA; files stay
-> on the user's machine (OPFS / native disk), never on our servers.
+> multi-agent orchestration. Documents live on the user's machine (OPFS, or local
+> disk via the native host) rather than as a cloud copy, and a task that calls an
+> AI model sends the content that task needs to the model service handling it.
 
 EO2Weave 是面向创作者的 AI 原生工作台：本地优先的文件管理、知识工作流与多智能体
-编排。纯浏览器 PWA，文件保存在用户本机（OPFS / 本地磁盘），不上传服务器。
+编排。文档保存在用户本机（OPFS，或通过本地助手保存在本地磁盘），不做云端副本；
+需要调用 AI 模型的任务，会把完成任务所需的内容发送给对应的模型服务方。
 
 ## What makes it different
 
 - **Local-first**: documents and workspaces live in the browser's OPFS or the
-  user's local disk via a native host. No cloud copy by default.
+  user's local disk via a native host, so the workspace is not uploaded to us as
+  a cloud copy.
 - **Multi-agent**: orchestrates coding agents (Claude Code, Codex CLI, OpenCode)
   as subagents, plus its own built-in agent loop with tool calling.
 - **WebMCP-native**: the app itself is addressable by external AI agents via
@@ -21,6 +24,20 @@ EO2Weave 是面向创作者的 AI 原生工作台：本地优先的文件管理�
 
 - International: https://weave.eo2suite.com
 - China: https://weave.eo2suite.cn
+
+## Data handling
+
+- Files and workspaces stay on the user's device. They are not uploaded to us as
+  a workspace copy.
+- Running a task sends the content that task needs — the prompt, conversation
+  context, and the page or file content involved — to the AI model service
+  handling it: a provider you configure yourself, or, on the China site, a
+  built-in model available to your account.
+- The native host, website tools and browser extension act only after you
+  authorize them, and that authorization can be revoked.
+- What each deployment collects and how it is retained is set out in its privacy
+  policy: [China](https://weave.eo2suite.cn/help/privacy) ·
+  [International](https://weave.eo2suite.com/help/privacy).
 
 ## For AI agents (WebMCP)
 
@@ -39,4 +56,6 @@ them after user authorization.
 ## Optional
 
 - [GitHub](https://github.com/nutstore/eo2weave): source code, issues, releases
-- [Privacy policy](https://weave.eo2suite.com/help/privacy): no telemetry; data stays local
+- [Model and algorithm registration](https://weave.eo2suite.cn/help/models): China
+- [Privacy policy](https://weave.eo2suite.cn/help/privacy): China
+- [Privacy policy](https://weave.eo2suite.com/help/privacy): international
