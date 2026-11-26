@@ -13,7 +13,7 @@ import dynamic from 'next/dynamic'
  */
 
 import { useState, useEffect, useCallback, useRef, memo, useMemo } from 'react'
-import { AlertTriangle, RefreshCw, WifiOff, KeyRound, Wallet } from 'lucide-react'
+import { AlertTriangle, RefreshCw, WifiOff, KeyRound, Wallet, X } from 'lucide-react'
 import { toast } from 'sonner'
 import { useT, useLocale } from '@/i18n'
 import { getNutstoreAIConsoleURL } from '@/lib/jianguoyun-ai-console'
@@ -467,9 +467,26 @@ export function ConversationView({
 
       </div>
 
-        {(conversationError || hasPersistedRetryError) && (
-          <ConversationErrorBanner error={conversationError || persistedRetryError} onRetry={handleRetry} />
-        )}
+        {(() => {
+          // Issue #370: the banner can be manually dismissed. `conversationError`
+          // (runtime store) hides while `dismissedError` matches it; the
+          // persisted-retry variant has no runtime error to key on, so it is
+          // always shown fresh (a new failed turn = a new banner).
+          if (!convId) return null
+          const rt = useConversationRuntimeStore.getState().runtimes.get(convId)
+          const showPersisted = !isProcessing && hasPersistedRetryError
+          const bannerError = conversationError ?? (showPersisted ? persistedRetryError : null)
+          const dismissible = Boolean(conversationError)
+          const dismissed = dismissible && rt?.dismissedError != null && rt.dismissedError === conversationError
+          if (!bannerError || (dismissible && dismissed)) return null
+          return (
+            <ConversationErrorBanner
+              error={bannerError}
+              onRetry={handleRetry}
+              onDismiss={dismissible ? () => useConversationRuntimeStore.getState().dismissConversationError(convId) : undefined}
+            />
+          )
+        })()}
 
         {/* Flow canvas panel — overlay, opened from the TopBar workflow button */}
         <FlowCanvasPanel conversationId={convId} />
@@ -694,9 +711,12 @@ const colorClasses = {
 const ConversationErrorBanner = memo(function ConversationErrorBanner({
   error,
   onRetry,
+  onDismiss,
 }: {
   error: string
   onRetry?: () => void
+  /** Hide the banner for this error (issue #370); omitted when there is nothing to dismiss. */
+  onDismiss?: () => void
 }) {
   const t = useT()
   const locale = useLocale()[0]
@@ -759,6 +779,16 @@ const ConversationErrorBanner = memo(function ConversationErrorBanner({
                 {t('conversation.error.gatewayRecharge')} →
               </button>
             </div>
+            {onDismiss && (
+              <button
+                type="button"
+                onClick={onDismiss}
+                aria-label={t('conversation.error.dismiss')}
+                className="shrink-0 self-start rounded-md p-1 text-current opacity-60 transition-opacity hover:opacity-100"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -793,6 +823,16 @@ const ConversationErrorBanner = memo(function ConversationErrorBanner({
                 {t('conversation.error.gatewayRelogin')} →
               </button>
             </div>
+            {onDismiss && (
+              <button
+                type="button"
+                onClick={onDismiss}
+                aria-label={t('conversation.error.dismiss')}
+                className="shrink-0 self-start rounded-md p-1 text-current opacity-60 transition-opacity hover:opacity-100"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -830,6 +870,16 @@ const ConversationErrorBanner = memo(function ConversationErrorBanner({
                 </button>
               )}
             </div>
+            {onDismiss && (
+              <button
+                type="button"
+                onClick={onDismiss}
+                aria-label={t('conversation.error.dismiss')}
+                className="shrink-0 self-start rounded-md p-1 text-current opacity-60 transition-opacity hover:opacity-100"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -877,6 +927,16 @@ const ConversationErrorBanner = memo(function ConversationErrorBanner({
               </button>
             )}
           </div>
+            {onDismiss && (
+              <button
+                type="button"
+                onClick={onDismiss}
+                aria-label={t('conversation.error.dismiss')}
+                className="shrink-0 self-start rounded-md p-1 text-current opacity-60 transition-opacity hover:opacity-100"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            )}
         </div>
       </div>
     </div>

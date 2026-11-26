@@ -127,6 +127,12 @@ export interface ConversationRuntime {
   streamingToolArgsByCallId: Record<string, string>
   /** Error message */
   error: string | null
+  /**
+   * Error string the user manually dismissed (issue #370). The banner hides
+   * while `error === dismissedError`; a NEW failure (different string) shows
+   * a fresh banner. Reset to null whenever the error state changes.
+   */
+  dismissedError: string | null
   /** Active run id for guarding stale callbacks */
   activeRunId: string | null
   /** Monotonic run counter for this conversation */
@@ -172,6 +178,7 @@ export function createEmptyRuntime(): ConversationRuntime {
     streamingToolArgs: '',
     streamingToolArgsByCallId: {},
     error: null,
+    dismissedError: null,
     activeRunId: null,
     runEpoch: 0,
     draftAssistant: null,
@@ -225,6 +232,8 @@ export interface ConversationRuntimeState {
   // ─── Runtime state mutations ───
   setConversationStatus: (convId: string, status: ConversationStatus) => void
   setConversationError: (convId: string, error: string | null) => void
+  /** Hide the error banner for the CURRENT error string (issue #370). A new failure (different string) shows a fresh banner. */
+  dismissConversationError: (convId: string) => void
   resetConversationState: (convId: string) => void
   collectAssets: (convId: string, assets: AssetMeta[]) => void
 
@@ -318,7 +327,18 @@ export const useConversationRuntimeStore = create<ConversationRuntimeState>()(
           state.runtimes.set(convId, rt)
         }
         rt.error = error
+        // A new error (different string) always shows a fresh banner (#370).
+        rt.dismissedError = null
         rt.status = error ? 'error' : 'idle'
+      })
+    },
+
+    dismissConversationError: (convId: string) => {
+      set((state) => {
+        const rt = state.runtimes.get(convId)
+        // Hide the banner for the current error string only; the failed turn
+        // in the transcript is untouched.
+        if (rt) rt.dismissedError = rt.error
       })
     },
 
@@ -346,6 +366,7 @@ export const useConversationRuntimeStore = create<ConversationRuntimeState>()(
           rt.streamingToolArgs = ''
           rt.streamingToolArgsByCallId = {}
           rt.error = null
+          rt.dismissedError = null
           rt.activeRunId = null
           rt.draftAssistant = null
           rt.contextWindowUsage = null
