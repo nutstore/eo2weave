@@ -1,61 +1,44 @@
 # EO2Weave (怡氧®AI)
 
-> AI-native creator workspace with local-first files, knowledge workflows, and
-> multi-agent orchestration. Documents live on the user's machine (OPFS, or local
-> disk via the native host) rather than as a cloud copy, and a task that calls an
-> AI model sends the content that task needs to the model service handling it.
+> AI-native creator workspace: local-first files, knowledge workflows, and
+> multi-agent orchestration. Available as a web app and as a Chrome/Edge browser
+> extension. Running a task sends the content that task needs to the AI model
+> service handling it.
 
-EO2Weave 是面向创作者的 AI 原生工作台：本地优先的文件管理、知识工作流与多智能体
-编排。文档保存在用户本机（OPFS，或通过本地助手保存在本地磁盘），不做云端副本；
-需要调用 AI 模型的任务，会把完成任务所需的内容发送给对应的模型服务方。
+怡氧®AI 是面向创作者的 AI 原生工作台，提供网页应用与 Chrome/Edge 浏览器扩展两种入口。
 
-## What makes it different
+The two deployments share one codebase but not one model setup: the China site
+(weave.eo2suite.cn) offers built-in models through a Nutstore account, while the
+international site (weave.eo2suite.com) expects a provider and API key you
+configure yourself. Some pages exist on only one deployment; the links below say
+which.
 
-- **Local-first**: documents and workspaces live in the browser's OPFS or the
-  user's local disk via a native host, so the workspace is not uploaded to us as
-  a cloud copy.
-- **Multi-agent**: orchestrates coding agents (Claude Code, Codex CLI, OpenCode)
-  as subagents, plus its own built-in agent loop with tool calling.
-- **WebMCP-native**: the app itself is addressable by external AI agents via
-  the WebMCP protocol — agents can create projects, manage conversations,
-  read/write workspace files, and drive the built-in agent on the user's behalf.
+Workspaces are not a cloud copy. Documents live in the browser's OPFS, or on
+local disk when the optional native host is installed. What a deployment
+collects, and how long it keeps it, is set out in that deployment's privacy
+policy rather than summarised here.
 
-## Sites
+## Docs
 
-- International: https://weave.eo2suite.com
-- China: https://weave.eo2suite.cn
+- [快速开始](https://weave.eo2suite.cn/docs/zh/user/getting-started): 创建第一个项目、发起第一次对话、安装浏览器扩展
+- [Getting started](https://weave.eo2suite.com/docs/en/user/getting-started): first project, first conversation, installing the extension
+- [Model setup](https://weave.eo2suite.com/docs/en/user/model-setup): configuring a provider, endpoint and API key — required on the international site
+- [Workspace and files](https://weave.eo2suite.com/docs/en/user/workspace): how projects, OPFS storage and local disk relate
+- [Backup](https://weave.eo2suite.com/docs/en/user/backup): exporting a project folder, or the whole workspace
+- [Built-in skills](https://weave.eo2suite.com/docs/en/user/builtin-skills): what ships with the app before you add anything
+- [Docs index (EN)](https://weave.eo2suite.com/docs/en) · [文档中心](https://weave.eo2suite.cn/docs/zh)
 
-## Data handling
+## Product
 
-- Files and workspaces stay on the user's device. They are not uploaded to us as
-  a workspace copy.
-- Running a task sends the content that task needs — the prompt, conversation
-  context, and the page or file content involved — to the AI model service
-  handling it: a provider you configure yourself, or, on the China site, a
-  built-in model available to your account.
-- The native host, website tools and browser extension act only after you
-  authorize them, and that authorization can be revoked.
-- What each deployment collects and how it is retained is set out in its privacy
-  policy: [China](https://weave.eo2suite.cn/help/privacy) ·
-  [International](https://weave.eo2suite.com/help/privacy).
+- [Download](https://weave.eo2suite.com/download): browser extension for Chrome and Edge
+- [WebMCP](https://weave.eo2suite.com/webmcp): the app's own page exposes its capabilities as WebMCP tools, so an external agent can create projects, read and write workspace files, and drive the built-in agent once the user authorizes it
 
-## For AI agents (WebMCP)
+## Policies
 
-EO2Weave's own page registers 20 WebMCP tools on `navigator.modelContext`
-(Chrome 140+, polyfilled otherwise), including:
-
-- list_projects / create_project
-- list_conversations / search_conversations / get_messages / send_message
-- read_folder_file / write_folder_file / list_folder_files
-- list_providers / list_models / set_default_model
-
-Tools are discovered dynamically per open tab; AI agents with WebMCP support
-(e.g. Chrome with the WebMCP API, or the EO2Weave browser extension) can invoke
-them after user authorization.
+- [Privacy policy (China)](https://weave.eo2suite.cn/help/privacy)
+- [Privacy policy (international)](https://weave.eo2suite.com/help/privacy)
+- [Third-party models and algorithm registration (China)](https://weave.eo2suite.cn/help/models)
 
 ## Optional
 
 - [GitHub](https://github.com/nutstore/eo2weave): source code, issues, releases
-- [Model and algorithm registration](https://weave.eo2suite.cn/help/models): China
-- [Privacy policy](https://weave.eo2suite.cn/help/privacy): China
-- [Privacy policy](https://weave.eo2suite.com/help/privacy): international
