@@ -12,7 +12,7 @@ export const projectHome = {
       badge: "로컬 우선",
       title: "여기서 창작을 시작하세요",
       description: "로컬 AI 워크스페이스에서 자연어로 파일과 대화하세요.",
-      descriptionSuffix: "데이터는 당신의 기기에 남습니다.",
+      descriptionSuffix: "파일은 기기에 저장되고, 요청은 모델 제공업체로 전송됩니다.",
       projectCount: "{count} 프로젝트",
       workspaceCount: "{count} 대화",
       docsHub: "문서 센터",
