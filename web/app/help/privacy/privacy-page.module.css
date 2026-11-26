@@ -304,6 +304,12 @@
   list-style: none;
 }
 
+.section p + p,
+.section ul + p,
+.section table + p {
+  margin-top: 0.9rem;
+}
+
 .section li {
   position: relative;
   padding-left: 1.35rem;
@@ -323,6 +329,74 @@
 .section strong {
   color: var(--privacy-text);
   font-weight: 750;
+}
+
+.section a {
+  color: var(--privacy-accent-strong);
+  font-weight: 700;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.2rem;
+}
+
+.section a:hover {
+  color: var(--privacy-accent);
+}
+
+.section table {
+  width: 100%;
+  margin: 1.25rem 0 0;
+  border-collapse: collapse;
+  font-size: 0.92rem;
+}
+
+.section th,
+.section td {
+  border: 1px solid var(--privacy-border);
+  padding: 0.6rem 0.85rem;
+  text-align: left;
+  color: var(--privacy-muted);
+  line-height: 1.6;
+  vertical-align: top;
+}
+
+.section th {
+  color: var(--privacy-text);
+  font-weight: 750;
+  background: var(--privacy-surface);
+}
+
+@media (max-width: 640px) {
+  .section table,
+  .section thead,
+  .section tbody,
+  .section tr,
+  .section th,
+  .section td {
+    display: block;
+  }
+
+  .section thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+
+  .section tr {
+    border: 1px solid var(--privacy-border);
+    border-radius: 0.75rem;
+  }
+
+  .section tr + tr {
+    margin-top: 0.6rem;
+  }
+
+  .section td {
+    border: 0;
+    padding: 0.45rem 0.85rem;
+  }
 }
 
 .contactCard {

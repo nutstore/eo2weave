@@ -18,9 +18,9 @@ type Copy = {
   appliesTo: string
   updated: string
   updatedValue: string
-  localLabel: string
-  localValue: string
-  summary: Array<{ icon: 'device' | 'choice' | 'shield'; title: string; body: string }>
+  localLabel?: string
+  localValue?: string
+  summary?: Array<{ icon: 'device' | 'choice' | 'shield'; title: string; body: string }>
   contents: string
   intro: ReactNode
   sections: Section[]
@@ -138,106 +138,135 @@ const copy: Record<Locale, Copy> = {
     contactLabel: 'Email privacy support',
   },
   zh: {
-    documentLabel: '隐私，始于设计',
-    title: '你的工作，只属于你。',
-    lead: 'EO2Weave 坚持本地处理、明确操作与可撤销授权。本政策说明 EO2Weave 网站和浏览器扩展会处理哪些数据，以及数据可能在何时离开你的设备。',
-    appliesTo: 'EO2Weave 网站与浏览器扩展',
+    documentLabel: '隐私政策',
+    title: '怡氧®AI 隐私政策',
+    lead: '我们重视您的个人信息安全。本政策说明我们在提供本产品时收集和使用哪些信息、如何保存和提供这些信息，以及您如何管理自己的信息。请在使用前阅读本政策。',
+    appliesTo: '怡氧®AI 网站与浏览器扩展',
     updated: '最近更新',
-    updatedValue: '2026 年 8 月 26 日',
-    localLabel: '运行模式',
-    localValue: '本地优先',
-    summary: [
-      {
-        icon: 'device',
-        title: '在你的设备上处理',
-        body: '设置、授权、缓存和任务上下文默认保留在本地；仅当任务需要外部服务时才会发送必要内容。',
-      },
-      {
-        icon: 'choice',
-        title: '仅在你提出请求时',
-        body: '读取页面和执行页面操作只为你明确发起的任务服务，不会在后台静默收集。',
-      },
-      {
-        icon: 'shield',
-        title: '无广告、无追踪',
-        body: '我们不出售你的数据，不投放行为广告，也不会在 EO2Weave 中加入第三方追踪器。',
-      },
-    ],
+    updatedValue: '2026 年 11 月 26 日',
     contents: '本页目录',
     intro: (
       <>
-        本政策适用于通过 weave.eo2suite.cn 和 weave.eo2suite.com 提供的 EO2Weave 服务（“网站”），以及 EO2Weave 浏览器扩展（“扩展”），以下统称“服务”。本政策中的“EO2Weave”及“我们”指这些服务的提供方。我们不运营接收你的对话、文件或浏览活动的服务器。
+        怡氧®AI（英文名 EO2Weave，下称“本产品”）由上海奕惟网络科技有限公司（下称“我们”）提供和运营，是支持 Chrome、Edge 的浏览器 AI 助手扩展程序，并提供配套的网页端工作台。您可以在浏览器侧边栏中，让本产品基于您正在浏览的网页、您授权访问的本地文件，以及您所在网站开放的功能，帮助您阅读、总结、写作、分析与协作。
       </>
     ),
     sections: [
       {
-        id: 'data-we-process',
-        title: '我们处理的数据',
+        id: 'account',
+        title: '账号的注册和登录',
         body: (
           <>
-            <p>这些服务主要在你的浏览器中运行，并尽可能在本地处理任务数据。为完成任务，它们可能在你的设备上处理以下信息：</p>
-            <ul>
-              <li><strong>页面内容。</strong>当你或智能体就某个页面提问时，这些服务会为该任务提取相关页面内容。</li>
-              <li><strong>页面操作。</strong>经你同意，智能体可为你发起的任务点击控件或填写表单。</li>
-              <li><strong>本地状态。</strong>设置、按站点的授权记录及缓存的工具说明保存在你的设备上。</li>
-              <li><strong>搜索查询。</strong>当你要求搜索网络时，查询内容会发送给完成该请求所需的搜索服务。</li>
-            </ul>
+            <p><strong>本产品支持两种使用方式</strong>：通过第三方账号（如坚果云账号）登录，登录后可使用账号对应的内置模型，无需自行配置；或<strong>不登录账号，自行配置模型服务商（如填写 API Key）</strong>后使用。我们仅收集实现相应功能所必需的信息。</p>
+            <p>当您选择通过第三方账号登录时，我们会在您明确授权后，从该第三方账号服务方获取以下必要信息：</p>
+            <table>
+              <thead>
+                <tr>
+                  <th>信息类型</th>
+                  <th>具体内容</th>
+                  <th>用途</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>账号标识</td>
+                  <td>用于登录校验的账号标识</td>
+                  <td>验证您的身份、维持登录状态</td>
+                </tr>
+                <tr>
+                  <td>服务权益信息</td>
+                  <td>积分、额度等</td>
+                  <td>关联并管理您可使用的模型与额度</td>
+                </tr>
+              </tbody>
+            </table>
+            <p>第三方账号的注册、密码管理和注销由相应账号服务方按照其规则处理。</p>
           </>
         ),
       },
       {
-        id: 'what-we-do-not-do',
-        title: '我们不做的事',
-        body: (
-          <ul>
-            <li>我们不收集、不上传你的浏览历史。</li>
-            <li>我们不在后台读取页面；内容仅为你明确运行的任务而处理。</li>
-            <li>我们不将你的数据发送到我们运营的服务器。</li>
-            <li>我们不会在服务中加入广告与第三方追踪器，也不出售或共享你的数据。</li>
-          </ul>
-        ),
-      },
-      {
-        id: 'ai-providers',
-        title: 'AI 模型服务',
-        body: <p>为响应你的请求，这些服务会将相关任务内容（可能包含你要求阅读的页面内容）发送给你自行配置的 AI 模型服务。该服务商会按其自身隐私政策处理这些内容。发送仅在你运行任务时发生，绝不会在后台自动进行。</p>,
-      },
-      {
-        id: 'webmcp',
-        title: '网站工具（WebMCP）',
-        body: <p>当你使用浏览器扩展，且网站通过 WebMCP 提供工具时，扩展可以将其列出。使用工具需要你按站点明确授权，且你可随时撤销。工具调用仅在你的浏览器标签页之间路由。</p>,
-      },
-      {
-        id: 'desktop-helper',
-        title: '可选的本地助手',
+        id: 'usage',
+        title: '使用产品时涉及的信息',
         body: (
           <>
-            <p>你可以单独安装并连接 EO2Weave 本地助手，以扩展智能体在本机上的能力。在你明确授权的项目文件夹范围内，本地助手可以：</p>
+            <p>为提供您使用的功能，本产品及相关服务方可能需要处理以下信息。使用 AI 功能时，完成任务所需的内容会发送给您选择的模型服务方，具体请参阅第三节。</p>
             <ul>
-              <li><strong>访问本地文件。</strong>为你发起的任务读取、创建、修改和整理文件。</li>
-              <li><strong>运行本地命令。</strong>执行获准的开发命令，例如测试、构建、类型检查及其他项目工具。</li>
+              <li><strong>对话与任务内容。</strong>您输入的指令、对话、上传或选取的内容、AI 返回的结果及必要的任务记录，用于理解请求、执行任务和保持会话连续。</li>
+              <li><strong>网页与文件内容。</strong>在您发起任务并授予相应权限后，本产品可能读取相关网页或您关联的本地文件，并按您的指令生成或修改内容。实际访问范围受浏览器、系统和产品授权控制。</li>
+              <li><strong>模型与工具配置。</strong>您选择的模型，以及自行填写的服务商名称、接口地址、模型信息和 API Key 等，用于连接您选择的模型或工具、发起请求和返回结果。</li>
+              <li><strong>使用与安全信息。</strong>模型调用和额度使用记录、设备与浏览器信息、IP 地址及必要的运行日志，用于展示用量、保障安全、排查故障和维护服务。</li>
+              <li><strong>意见与反馈。</strong>当您向我们反馈问题或提出建议时，我们可能处理您主动提供的反馈内容及联系方式，以便与您沟通并处理相关问题。</li>
             </ul>
-            <p>本地助手不会被静默安装或连接。文件访问仅限于你授权的文件夹，命令执行受已配置的权限与审批策略约束。不安装本地助手也可以使用 EO2Weave。</p>
+            <p>如果您提供的内容涉及他人个人信息，请确保您有权使用相关信息。</p>
           </>
         ),
       },
       {
-        id: 'storage-deletion',
-        title: '存储与删除',
-        body: <p>包括设置、授权和缓存在内的本地状态均保存在你的设备上。你可以通过浏览器设置删除网站数据；卸载扩展会删除由扩展保存的数据。</p>,
+        id: 'third-party-models',
+        title: '第三方大模型和相关服务',
+        body: (
+          <>
+            <p>您可以通过以下两种方式使用 AI 模型：</p>
+            <ul>
+              <li><strong>使用内置模型。</strong>您登录坚果云账号后，可以选择账号对应的内置第三方大模型。发起任务时，完成任务所需的指令、对话上下文、网页或文件内容会发送给所选模型的服务方，用于处理您的请求并返回结果。</li>
+              <li><strong>自行配置模型服务商。</strong>您也可以填写 API Key 使用预置服务商，或自定义服务商。发起任务时，完成任务所需的内容会发送至您配置的服务方或接口，以处理您的请求并返回结果。</li>
+            </ul>
+            <p>有关本产品接入的第三方大模型及相关算法备案信息，您可以查阅<Link href="/help/models/">《怡氧®AI 第三方大模型及算法备案信息说明》</Link>。</p>
+            <p>您自行接入的模型、网站或工具可能按照其自身的隐私政策处理收到的信息。使用前请核对服务商、接口地址及其规则。我们会就本产品自身参与的信息处理履行相应保护义务；对于由我们接入并向其提供个人信息的合作方，我们会依法履行告知、合同管理及必要的同意程序。有关模型和合作方的信息，可通过产品展示的模型或服务商说明了解。</p>
+            <p>API Key 是访问模型服务的凭证，请妥善保管，并注意核对您填写的服务商及接口地址。我们仅为实现您选择的连接和调用功能处理相关配置，并采取与其风险相适应的保护措施。</p>
+          </>
+        ),
       },
       {
-        id: 'changes',
-        title: '政策变更',
-        body: <p>我们可能随服务功能变化更新本政策。重大变更会在本页体现，并同时更新最近更新日期。</p>,
+        id: 'sharing',
+        title: '信息的提供、保存与安全',
+        body: (
+          <>
+            <p>我们仅在提供服务、保障安全、履行法定义务等必要范围内处理或向合作方提供信息。因您选择第三方账号登录、接入模型或使用外部工具而涉及其他服务方时，我们会按照适用法律处理与这些服务方之间的信息流转。</p>
+            <p>您可以通过相关购买页面购买积分或升级服务。购买过程中涉及的信息处理，适用购买页面所展示的隐私政策；与您账号关联的积分和服务权益，可用于在本产品中展示和使用相应功能。</p>
+            <p><strong>数据统计与分析</strong>：为了解产品使用情况、改进功能和服务体验，我们可能接入火山引擎提供的数据统计 SDK（提供方：北京火山引擎科技有限公司）。该 SDK 可能处理必要的设备及浏览器信息、使用记录等，用于统计和分析产品使用情况。</p>
+            <p>我们在实现处理目的所需的期限内保存个人信息；法律法规要求另行保存的，从其规定。超出保存期限后，我们将依法删除或匿名化处理。我们会采取合理的访问控制、传输保护和安全管理措施，防止信息遭到未经授权的访问、泄露、篡改或丢失。如果发生个人信息安全事件，我们将及时采取必要的补救措施，并按照法律法规要求告知您相关情况。</p>
+          </>
+        ),
+      },
+      {
+        id: 'cookies',
+        title: '我们如何使用 Cookie 等同类技术',
+        body: (
+          <>
+            <p>为了让您更方便、安全地使用本产品，我们可能在网页端使用 Cookie 等同类技术，用于维持登录状态、保存必要设置，以及保障服务的安全和正常运行。</p>
+            <p>您可以通过浏览器设置管理或清除 Cookie。请注意，清除或关闭 Cookie 后，您可能需要重新登录，部分依赖 Cookie 的功能也可能受到影响。</p>
+            <p>如果您访问第三方网站，该网站使用 Cookie 等技术的情况适用其自身的隐私政策。</p>
+          </>
+        ),
+      },
+      {
+        id: 'rights',
+        title: '您如何管理个人信息',
+        body: (
+          <>
+            <p>您可以退出第三方账号登录，也可以在产品设置中管理自行配置的模型服务商和 API Key。对于授予本产品的浏览器或文件访问权限，您可以通过浏览器或系统设置进行管理。</p>
+            <p>如果您对本产品处理您的个人信息有疑问，或希望查阅、更正、删除相关信息，可以通过本产品或官网公布的客服渠道联系我们。</p>
+            <p>如果您需要管理或注销坚果云账号，或管理由第三方模型服务商处理的信息，请通过相应服务方提供的方式进行操作。</p>
+          </>
+        ),
+      },
+      {
+        id: 'minors',
+        title: '未成年人保护',
+        body: <p>未成年人应在监护人的指导下使用本产品。我们会依照适用法律保护未成年人的个人信息；监护人如对相关信息处理有疑问，可通过下述渠道联系我们。</p>,
       },
       {
         id: 'contact',
-        title: '联系我们',
-        body: <p>如对本政策有任何疑问，欢迎联系我们。</p>,
+        title: '政策更新与联系我们',
+        body: (
+          <>
+            <p>我们可能因产品功能或法律要求变化而更新本政策。重大变更将通过产品提示、网站公告或其他适当方式告知；依法需要重新取得同意的，我们会在相关处理前完成。</p>
+            <p>您可通过本产品或官网公布的客服渠道联系我们，提出隐私问题或行使个人信息相关权利。</p>
+          </>
+        ),
       },
     ],
-    backToProduct: '打开 EO2Weave',
+    backToProduct: '打开怡氧®AI',
     contactLabel: '发送隐私问题邮件',
   },
 }
@@ -261,9 +290,9 @@ export function PrivacyPage({ locale }: { locale: Locale }) {
       <a className={styles.skipLink} href="#privacy-content">{isChinese ? '跳到主要内容' : 'Skip to main content'}</a>
       <header className={styles.header}>
         <div className={styles.headerInner}>
-          <Link className={styles.brand} href="/" aria-label="EO2Weave home">
+          <Link className={styles.brand} href="/" aria-label={isChinese ? '怡氧®AI 首页' : 'EO2Weave home'}>
             <span className={styles.brandMark} aria-hidden="true">✦</span>
-            <span>EO2Weave</span>
+            <span>{isChinese ? '怡氧®AI' : 'EO2Weave'}</span>
           </Link>
           <div className={styles.headerActions}>
             <Link className={styles.productLink} href="/">{text.backToProduct} <span aria-hidden="true">↗</span></Link>
@@ -279,17 +308,21 @@ export function PrivacyPage({ locale }: { locale: Locale }) {
           <div className={styles.metaRow}>
             <span className={styles.metaPill}>{text.appliesTo}</span>
             <span className={styles.metaPill}>{text.updated}: {text.updatedValue}</span>
-            <span className={styles.metaPill}>{text.localLabel}: {text.localValue}</span>
+            {text.localLabel && text.localValue ? (
+              <span className={styles.metaPill}>{text.localLabel}: {text.localValue}</span>
+            ) : null}
           </div>
-          <div className={styles.summaryGrid} aria-label={isChinese ? '隐私摘要' : 'Privacy summary'}>
-            {text.summary.map((item) => (
-              <article className={styles.summaryCard} key={item.title}>
-                <span className={styles.summaryIcon}><Icon name={item.icon} /></span>
-                <h2>{item.title}</h2>
-                <p>{item.body}</p>
-              </article>
-            ))}
-          </div>
+          {text.summary ? (
+            <div className={styles.summaryGrid} aria-label={isChinese ? '隐私摘要' : 'Privacy summary'}>
+              {text.summary.map((item) => (
+                <article className={styles.summaryCard} key={item.title}>
+                  <span className={styles.summaryIcon}><Icon name={item.icon} /></span>
+                  <h2>{item.title}</h2>
+                  <p>{item.body}</p>
+                </article>
+              ))}
+            </div>
+          ) : null}
         </section>
 
         <div className={styles.bodyGrid}>
