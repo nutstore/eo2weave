@@ -25,6 +25,7 @@ import { resolveConversationAgentId } from '@/agent/conversation-agent-routing'
 import { emitThinkingStart, emitThinkingDelta, emitCompressionEvent, emitToolStart, emitComplete, emitError } from '@/streaming-bus'
 import { useConversationContextStore } from './conversation-context.store'
 import { useConversationRuntimeStore, createEmptyRuntime } from './conversation-runtime.store'
+import { markRuntimeError } from './runtime-error-marker'
 import { deleteAgentLoop, setAgentLoop } from './agent-loop-registry'
 import { deleteStreamingQueues, getStreamingQueues, setStreamingQueues } from './streaming-queue-registry'
 import { applyDraftAssistantEvent } from './draft-assistant'
@@ -237,7 +238,7 @@ async function runAgentBody(
         useConversationRuntimeStore.setState((state) => {
           const r = ensureRuntime(state, conversationId)
           r.status = 'error'
-          r.error = message
+          markRuntimeError(r, message)
           r.activeRunId = null
           r.draftAssistant = null
           r.currentToolCall = null
@@ -421,7 +422,7 @@ async function runAgentBody(
         useConversationRuntimeStore.setState((state) => {
           const r = ensureRuntime(state, conversationId)
           r.status = 'error'
-          r.error = unavailableMessage
+          markRuntimeError(r, unavailableMessage)
           r.activeRunId = null
           r.draftAssistant = null
           r.currentToolCall = null
@@ -612,9 +613,8 @@ async function runAgentBody(
           runEpoch = rt.runEpoch
           rt.activeRunId = runId
           rt.status = 'pending'
-          rt.error = null
           // A new run always shows its own failure, even with an identical message (#370).
-          rt.dismissedError = null
+          markRuntimeError(rt, null)
           rt.currentToolCall = null
           rt.activeToolCalls = []
           rt.streamingToolArgs = ''
@@ -647,7 +647,7 @@ async function runAgentBody(
           r.runEpoch = runEpoch
           r.activeRunId = runId
           r.status = 'pending'
-          r.error = null
+          markRuntimeError(r, null)
           r.currentToolCall = null
           r.activeToolCalls = []
           r.streamingToolArgs = ''
@@ -753,7 +753,7 @@ async function runAgentBody(
             const r = ensureRuntime(state, conversationId)
             if (r.activeRunId !== runId) return
             r.status = 'error'
-            r.error = message
+            markRuntimeError(r, message)
             r.activeRunId = null
             r.draftAssistant = null
             r.currentToolCall = null
@@ -1556,7 +1556,7 @@ async function runAgentBody(
             const r = state.runtimes.get(conversationId)
             if (r) {
               r.status = status
-              r.error = error || null
+              markRuntimeError(r, error || null)
               r.currentToolCall = null
               r.activeToolCalls = []
               r.streamingToolArgs = ''
@@ -2441,7 +2441,7 @@ async function runAgentBody(
               const r = state.runtimes.get(conversationId)
               if (r) {
                 r.status = 'error'
-                r.error = err.message
+                markRuntimeError(r, err.message)
                 r.activeRunId = null
                 r.draftAssistant = null
               }
@@ -2647,7 +2647,7 @@ async function runAgentBody(
             const r = state.runtimes.get(conversationId)
             if (r) {
               r.status = 'error'
-              r.error = error instanceof Error ? error.message : String(error)
+              markRuntimeError(r, error instanceof Error ? error.message : String(error))
               r.activeRunId = null
               r.draftAssistant = null
             }

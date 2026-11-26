@@ -13,6 +13,7 @@
  */
 
 import { create } from 'zustand'
+import { markRuntimeError } from './runtime-error-marker'
 import { immer } from 'zustand/middleware/immer'
 import { enableMapSet } from 'immer'
 import type {
@@ -327,9 +328,8 @@ export const useConversationRuntimeStore = create<ConversationRuntimeState>()(
           rt = createEmptyRuntime()
           state.runtimes.set(convId, rt)
         }
-        rt.error = error
         // Assigning an error always clears the dismissal marker (#370).
-        rt.dismissedError = null
+        markRuntimeError(rt, error)
         rt.status = error ? 'error' : 'idle'
       })
     },
@@ -373,8 +373,7 @@ export const useConversationRuntimeStore = create<ConversationRuntimeState>()(
           rt.activeToolCalls = []
           rt.streamingToolArgs = ''
           rt.streamingToolArgsByCallId = {}
-          rt.error = null
-          rt.dismissedError = null
+          markRuntimeError(rt, null)
           rt.activeRunId = null
           rt.draftAssistant = null
           rt.contextWindowUsage = null
