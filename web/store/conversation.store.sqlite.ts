@@ -30,7 +30,7 @@ import { useWorkspacePreferencesStore } from '@/store/workspace-preferences.stor
 import { emitCompressionEvent } from '@/streaming-bus'
 import { useConversationContextStore } from './conversation-context.store'
 import { useConversationRuntimeStore, createEmptyRuntime } from './conversation-runtime.store'
-import { markRuntimeError } from './runtime-error-marker'
+import { markRuntimeError, stripRuntimePayload } from '@/store/runtime-error-marker'
 import { setQueuedMessageMirror } from './queued-message-mirror-slot'
 import { deleteAgentLoop, getAgentLoop, setAgentLoop } from './agent-loop-registry'
 import { deleteStreamingQueues, getStreamingQueues } from './streaming-queue-registry'
@@ -2626,9 +2626,15 @@ configureConversationEviction({
     // Release the mirrored runtime entry as well (idle leftovers only).
     useConversationRuntimeStore.setState((draft) => {
       const rt = draft.runtimes.get(id)
-      if (rt && rt.status === 'idle' && !rt.activeRunId && !rt.draftAssistant) {
-        draft.runtimes.delete(id)
+      if (!rt || rt.status !== 'idle' || rt.activeRunId || rt.draftAssistant) return
+      // Entries holding a dismiss marker are kept payload-free: the persisted
+      // failed turn survives eviction, so dropping `dismissedError` here would
+      // revive the banner the user closed on the next open (#370).
+      if (rt.dismissedError) {
+        stripRuntimePayload(rt)
+        return
       }
+      draft.runtimes.delete(id)
     })
   },
 })
