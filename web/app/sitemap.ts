@@ -7,9 +7,14 @@ export default function sitemap(): MetadataRoute.Sitemap {
   // The model registration notice is domestic-only: the international
   // deployment does not build it, so it must never declare an `en` alternate.
   if (isCn) paths.push('/help/models')
+  // `/help/privacy` no longer describes equivalent policies across deployments
+  // (the domestic one covers account-backed model processing, the international
+  // one keeps the local-first claims), so neither page may declare the other as
+  // its language alternate — same reasoning as the domestic-only notice.
+  const withoutAlternates = new Set(['/help/privacy', '/help/models'])
   return paths.map((path) => ({
     url: `${base}${path}`,
-    ...(path === '/help/models'
+    ...(withoutAlternates.has(path)
       ? {}
       : {
           alternates: {
