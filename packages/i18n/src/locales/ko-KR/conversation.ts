@@ -230,6 +230,7 @@ truncated: "응답이 길이 제한에 도달하여 잘렸습니다.",
       network: "네트워크 오류 — 모델 공급자에 연결할 수 없습니다. 연결 상태를 확인한 후 다시 시도해 주세요.",
       aborted: "생성이 중지되었습니다",
       showDetails: "상세 정보 보기",
+      dismiss: "닫기",
     },
     // 반복 횟수 제한
     iterationLimit: {

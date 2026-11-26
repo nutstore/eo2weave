@@ -262,6 +262,7 @@ truncated: "回复因达到长度上限被截断。",
       network: "网络连接失败，无法访问模型服务商，请检查网络后重试",
       aborted: "已停止生成",
       showDetails: "查看详细信息",
+      dismiss: "关闭",
     },
     // 迭代次数限制
     iterationLimit: {

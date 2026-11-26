@@ -149,6 +149,7 @@ export function useConversationLogic() {
   // NOT destructured here. They change at ~60fps during streaming and would
   // cause ConversationView to re-render on every token.
   const conversationError = active.error
+  const dismissedError = active.dismissedError
   const activeContextWindowUsage = active.contextWindowUsage
 
   // ── Conversation actions (stable refs from store) ──
@@ -965,6 +966,7 @@ export function useConversationLogic() {
     convId,
     activeMessages, sendScrollRequest,
     conversationError,
+    dismissedError,
     activeContextWindowUsage,
     isProcessing,
     isRunning,

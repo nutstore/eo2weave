@@ -70,7 +70,8 @@ vi.mock('@/store/conversation.store', () => ({
 
 vi.mock('@/store/conversation-runtime.store', () => {
   const useConversationRuntimeStore = (selector?: (state: unknown) => unknown) => {
-    const state = {
+    let getState: () => Record<string, unknown> = () => state
+    const state: Record<string, unknown> = {
       runtimes: new Map(),
       pendingMessageQueues: new Map(),
       isConversationRunning: vi.fn(() => false),
@@ -84,7 +85,12 @@ vi.mock('@/store/conversation-runtime.store', () => {
       moveQueuedMessage: vi.fn(),
       getQueuedMessage: vi.fn(() => undefined),
       resetConversationState: vi.fn(),
+      // issue #370: the error banner reads the runtime directly (non-reactive)
+      getState,
+      dismissConversationError: vi.fn(),
     }
+    getState = () => state
+    ;(useConversationRuntimeStore as unknown as { getState: () => unknown }).getState = getState
     return selector ? selector(state) : state
   }
   // conversation.store.sqlite.ts subscribes to mount-count changes at import time

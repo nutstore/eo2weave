@@ -21,6 +21,7 @@ const NULL_SLICE: ActiveConversationSlice = {
   messages: EMPTY_MESSAGES,
   status: 'idle' as const,
   error: null,
+  dismissedError: null,
   contextWindowUsage: null,
 }
 
@@ -29,6 +30,8 @@ export interface ActiveConversationSlice {
   messages: Message[]
   status: 'idle' | 'pending' | 'tool_calling' | 'streaming' | 'error'
   error: string | null
+  /** Error the user dismissed for the current run (issue #370), trimmed like `error`. */
+  dismissedError: string | null
   contextWindowUsage: {
     usagePercent: number
     usedTokens: number
@@ -98,6 +101,7 @@ export function useActiveConversation(): ActiveConversationSlice {
       return {
         status: rt.status,
         error: rt.error,
+        dismissedError: rt.dismissedError,
         contextWindowUsage: rt.contextWindowUsage,
       }
     }),
@@ -115,6 +119,7 @@ export function useActiveConversation(): ActiveConversationSlice {
     messages: convSlice.messages,
     status: rt?.status || 'idle',
     error: rt?.status === 'error' ? rt.error?.trim() || null : null,
+    dismissedError: rt?.dismissedError?.trim() || null,
     contextWindowUsage: assistantUsage,
   }
 }

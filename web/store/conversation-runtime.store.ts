@@ -13,6 +13,7 @@
  */
 
 import { create } from 'zustand'
+import { markRuntimeError } from '@/store/runtime-error-marker'
 import { immer } from 'zustand/middleware/immer'
 import { enableMapSet } from 'immer'
 import type {
@@ -127,6 +128,13 @@ export interface ConversationRuntime {
   streamingToolArgsByCallId: Record<string, string>
   /** Error message */
   error: string | null
+  /**
+   * Error string the user manually dismissed (issue #370). The banner hides
+   * while `error === dismissedError`; a NEW run (or a new failure string)
+   * shows a fresh banner. Trimmed on both sides so whitespace never keeps a
+   * dismissed banner on screen.
+   */
+  dismissedError: string | null
   /** Active run id for guarding stale callbacks */
   activeRunId: string | null
   /** Monotonic run counter for this conversation */
@@ -172,6 +180,7 @@ export function createEmptyRuntime(): ConversationRuntime {
     streamingToolArgs: '',
     streamingToolArgsByCallId: {},
     error: null,
+    dismissedError: null,
     activeRunId: null,
     runEpoch: 0,
     draftAssistant: null,
@@ -225,6 +234,8 @@ export interface ConversationRuntimeState {
   // ─── Runtime state mutations ───
   setConversationStatus: (convId: string, status: ConversationStatus) => void
   setConversationError: (convId: string, error: string | null) => void
+  /** Hide the banner for the given error string (issue #370). Any other failure string still shows. */
+  dismissConversationError: (convId: string, error: string | null) => void
   resetConversationState: (convId: string) => void
   collectAssets: (convId: string, assets: AssetMeta[]) => void
 
@@ -317,8 +328,25 @@ export const useConversationRuntimeStore = create<ConversationRuntimeState>()(
           rt = createEmptyRuntime()
           state.runtimes.set(convId, rt)
         }
-        rt.error = error
+        // Assigning an error always clears the dismissal marker (#370).
+        markRuntimeError(rt, error)
         rt.status = error ? 'error' : 'idle'
+      })
+    },
+
+    dismissConversationError: (convId: string, error: string | null) => {
+      set((state) => {
+        let rt = state.runtimes.get(convId)
+        if (!rt) {
+          // The persisted-turn banner can render right after a reload, before
+          // anything else creates the runtime entry — the dismissal still has
+          // to stick, so create it here like setConversationError does.
+          rt = createEmptyRuntime()
+          state.runtimes.set(convId, rt)
+        }
+        // Hide the banner for this error string only; the failed turn in the
+        // transcript is untouched.
+        rt.dismissedError = error?.trim() || null
       })
     },
 
@@ -345,7 +373,7 @@ export const useConversationRuntimeStore = create<ConversationRuntimeState>()(
           rt.activeToolCalls = []
           rt.streamingToolArgs = ''
           rt.streamingToolArgsByCallId = {}
-          rt.error = null
+          markRuntimeError(rt, null)
           rt.activeRunId = null
           rt.draftAssistant = null
           rt.contextWindowUsage = null

@@ -13,10 +13,11 @@ import dynamic from 'next/dynamic'
  */
 
 import { useState, useEffect, useCallback, useRef, memo, useMemo } from 'react'
-import { AlertTriangle, RefreshCw, WifiOff, KeyRound, Wallet } from 'lucide-react'
+import { AlertTriangle, RefreshCw, WifiOff, KeyRound, Wallet, X } from 'lucide-react'
 import { toast } from 'sonner'
 import { useT, useLocale } from '@/i18n'
 import { getNutstoreAIConsoleURL } from '@/lib/jianguoyun-ai-console'
+import { resolveErrorBanner } from '@/lib/conversation-error-banner'
 import { presentLlmError } from './llm-error'
 import { ErrorBoundary } from '@/components/error/ErrorBoundary'
 import { AgentRichInput, type AgentRichInputHandle } from './AgentRichInput'
@@ -141,7 +142,7 @@ export function ConversationView({
     draftTextToRestore, onDraftRestored,
     allAgents, activeAgentId, setActiveAgent, createAgent, deleteAgent, mentionAgents,
     convId, activeMessages, sendScrollRequest,
-    conversationError, activeContextWindowUsage,
+    conversationError, dismissedError, activeContextWindowUsage,
     isProcessing, status, suggestedFollowUp, toolResults,
     hasApiKey, enableThinking, thinkingLevel, setEnableThinking, setThinkingLevel,
     agentMode, setAgentMode,
@@ -467,9 +468,27 @@ export function ConversationView({
 
       </div>
 
-        {(conversationError || hasPersistedRetryError) && (
-          <ConversationErrorBanner error={conversationError || persistedRetryError} onRetry={handleRetry} />
-        )}
+        {(() => {
+          // Issue #370: the banner can be manually dismissed. `dismissedError`
+          // is subscribed through useActiveConversation, so clicking × hides
+          // the banner immediately; it only hides the string it was clicked on,
+          // and a new run starts with a clean marker (reset at run start).
+          const bannerError = resolveErrorBanner({
+            conversationError,
+            persistedRetryError: !isProcessing && hasPersistedRetryError ? persistedRetryError : null,
+            dismissedError,
+          })
+          if (!convId || !bannerError) return null
+          return (
+            <ConversationErrorBanner
+              error={bannerError}
+              onRetry={handleRetry}
+              onDismiss={() =>
+                useConversationRuntimeStore.getState().dismissConversationError(convId, bannerError)
+              }
+            />
+          )
+        })()}
 
         {/* Flow canvas panel — overlay, opened from the TopBar workflow button */}
         <FlowCanvasPanel conversationId={convId} />
@@ -694,9 +713,12 @@ const colorClasses = {
 const ConversationErrorBanner = memo(function ConversationErrorBanner({
   error,
   onRetry,
+  onDismiss,
 }: {
   error: string
   onRetry?: () => void
+  /** Hide the banner for this error (issue #370). */
+  onDismiss?: () => void
 }) {
   const t = useT()
   const locale = useLocale()[0]
@@ -759,6 +781,16 @@ const ConversationErrorBanner = memo(function ConversationErrorBanner({
                 {t('conversation.error.gatewayRecharge')} →
               </button>
             </div>
+            {onDismiss && (
+              <button
+                type="button"
+                onClick={onDismiss}
+                aria-label={t('conversation.error.dismiss')}
+                className="shrink-0 self-start rounded-md p-1 text-current opacity-60 transition-opacity hover:opacity-100"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -793,6 +825,16 @@ const ConversationErrorBanner = memo(function ConversationErrorBanner({
                 {t('conversation.error.gatewayRelogin')} →
               </button>
             </div>
+            {onDismiss && (
+              <button
+                type="button"
+                onClick={onDismiss}
+                aria-label={t('conversation.error.dismiss')}
+                className="shrink-0 self-start rounded-md p-1 text-current opacity-60 transition-opacity hover:opacity-100"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -830,6 +872,16 @@ const ConversationErrorBanner = memo(function ConversationErrorBanner({
                 </button>
               )}
             </div>
+            {onDismiss && (
+              <button
+                type="button"
+                onClick={onDismiss}
+                aria-label={t('conversation.error.dismiss')}
+                className="shrink-0 self-start rounded-md p-1 text-current opacity-60 transition-opacity hover:opacity-100"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -877,6 +929,16 @@ const ConversationErrorBanner = memo(function ConversationErrorBanner({
               </button>
             )}
           </div>
+            {onDismiss && (
+              <button
+                type="button"
+                onClick={onDismiss}
+                aria-label={t('conversation.error.dismiss')}
+                className="shrink-0 self-start rounded-md p-1 text-current opacity-60 transition-opacity hover:opacity-100"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            )}
         </div>
       </div>
     </div>
