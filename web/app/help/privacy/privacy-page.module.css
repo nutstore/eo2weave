@@ -136,6 +136,15 @@
   line-height: 0.98;
 }
 
+/* Georgia draws ® at full cap height, so it reads as a second headline glyph
+ * next to CJK characters. Keep it a registered mark, not a design element. */
+.reg {
+  font-size: 0.38em;
+  font-weight: 400;
+  vertical-align: 0.65em;
+  letter-spacing: 0;
+}
+
 .heroLead {
   max-width: 720px;
   margin: 1.65rem 0 0;
@@ -304,6 +313,13 @@
   list-style: none;
 }
 
+.section p + p,
+.section ul + p,
+.section table + p,
+.tableScroll + p {
+  margin-top: 0.9rem;
+}
+
 .section li {
   position: relative;
   padding-left: 1.35rem;
@@ -323,6 +339,51 @@
 .section strong {
   color: var(--privacy-text);
   font-weight: 750;
+}
+
+.section a {
+  color: var(--privacy-accent-strong);
+  font-weight: 700;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.2rem;
+}
+
+.section a:hover {
+  color: var(--privacy-accent);
+}
+
+.section table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.92rem;
+}
+
+/* Scroll the table instead of restructuring it: stacking the cells on narrow
+ * screens would drop the column headings that give the values their meaning. */
+.tableScroll {
+  margin-top: 1.25rem;
+  overflow-x: auto;
+}
+
+.tableScroll table {
+  min-width: 30rem;
+}
+
+.section th,
+.section td {
+  border: 1px solid var(--privacy-border);
+  padding: 0.6rem 0.85rem;
+  text-align: left;
+  color: var(--privacy-muted);
+  line-height: 1.6;
+  vertical-align: top;
+}
+
+.section th {
+  color: var(--privacy-text);
+  font-weight: 750;
+  background: var(--privacy-surface);
 }
 
 .contactCard {
@@ -353,6 +414,18 @@
   gap: 1rem;
   color: var(--privacy-subtle);
   font-size: 0.78rem;
+}
+
+.footerIcp {
+  color: inherit;
+  text-decoration: none;
+  border-bottom: 1px solid currentColor;
+  opacity: 0.75;
+}
+
+.footerIcp:hover {
+  color: var(--privacy-text);
+  opacity: 1;
 }
 
 .page a:focus-visible {

@@ -10,7 +10,7 @@ describe('resolveSiteFooterConfig', () => {
     expect(config.operator).toBe('上海奕惟网络科技有限公司')
     expect(config.rights).toBe('保留所有权利')
     expect(config.icpNumber).toBe('沪ICP备2026001234号-1')
-    expect(config.privacyHref).toBe('/help/privacy/')
+    expect(config.privacyHref).toBe('/help/privacy')
   })
 
   it('names the overseas operator on the global build and never shows ICP', () => {

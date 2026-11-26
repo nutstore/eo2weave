@@ -16,18 +16,44 @@ const IS_CN_BUILD = process.env.NEXT_PUBLIC_DEPLOY_REGION === 'cn'
 
 const englishMetadata: Metadata = {
   title: 'Privacy Policy — EO2Weave',
-  description: 'How the EO2Weave websites and browser extension process data, protect local files, and give you control over website tools.',
+  description: 'How the EO2Weave website and browser extension process data, protect local files, and give you control over website tools.',
   alternates: {
-    canonical: '/help/privacy/',
+    canonical: '/help/privacy',
+  },
+  // Without a page-level Open Graph block the shared layout description is used,
+  // which promises local-only data and does not describe this policy.
+  openGraph: {
+    type: 'website',
+    url: '/help/privacy',
+    title: 'Privacy Policy — EO2Weave',
+    description: 'What the EO2Weave website and browser extension process, and when data leaves your device.',
+  },
+  // Twitter cards do NOT inherit the Open Graph block, so without this the root
+  // layout's local-first description is used for this page's previews too.
+  twitter: {
+    card: 'summary_large_image',
+    title: 'Privacy Policy — EO2Weave',
+    description: 'What the EO2Weave website and browser extension process, and when data leaves your device.',
   },
   robots: { index: true, follow: true },
 }
 
 const chineseMetadata: Metadata = {
-  title: '隐私政策 — EO2Weave',
-  description: '了解 EO2Weave 网站和浏览器扩展如何处理数据、保护本地文件，以及如何让你管理网站工具授权。',
+  title: '隐私政策 — 怡氧®AI',
+  description: '了解怡氧®AI 如何处理账号、对话与文件内容、第三方大模型及数据统计等信息，以及你如何管理个人信息。',
   alternates: {
-    canonical: '/help/privacy/',
+    canonical: '/help/privacy',
+  },
+  openGraph: {
+    type: 'website',
+    url: '/help/privacy',
+    title: '隐私政策 — 怡氧®AI',
+    description: '了解怡氧®AI 如何处理账号、对话与文件内容、第三方大模型及数据统计等信息。',
+  },
+  twitter: {
+    card: 'summary_large_image',
+    title: '隐私政策 — 怡氧®AI',
+    description: '了解怡氧®AI 如何处理账号、对话与文件内容、第三方大模型及数据统计等信息。',
   },
   robots: { index: true, follow: true },
 }

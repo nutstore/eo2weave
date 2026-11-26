@@ -31,7 +31,7 @@ export type SiteFooterConfig = {
   rights: string
   /** ICP filing number to display, or null when unset (entry hidden). */
   icpNumber: string | null
-  /** Privacy policy route (trailing slash matches alternates.canonical). */
+  /** Privacy policy route — no trailing slash, matching `trailingSlash: false`. */
   privacyHref: string
 }
 
@@ -40,7 +40,7 @@ export function resolveSiteFooterConfig(isCnBuild: boolean, icpRaw: string | und
     operator: isCnBuild ? '上海奕惟网络科技有限公司' : 'Astronet Technology PTE LTD',
     rights: isCnBuild ? '保留所有权利' : 'All rights reserved.',
     icpNumber: isCnBuild ? resolveIcpNumber(icpRaw) : null,
-    privacyHref: '/help/privacy/',
+    privacyHref: '/help/privacy',
   }
 }
 

@@ -16,6 +16,11 @@ const IS_CN_BUILD = process.env.NEXT_PUBLIC_DEPLOY_REGION === 'cn'
 
 const SITE_URL = IS_CN_BUILD ? 'https://weave.eo2suite.cn' : 'https://weave.eo2suite.com'
 
+// The two deployments no longer share one data story. The domestic build has
+// server-side parts — account and entitlements, built-in model access, usage
+// analytics — so it may claim that workspace *files* stay on the device, not
+// that all data does. The international build is bring-your-own-key and keeps
+// the stronger wording. See the per-deployment privacy policies under /help.
 const metadataByRegion: Metadata = IS_CN_BUILD
   ? {
       title: '怡氧®AI',
@@ -25,7 +30,7 @@ const metadataByRegion: Metadata = IS_CN_BUILD
         type: 'website',
         siteName: '怡氧®AI',
         title: '怡氧®AI — AI 原生创作工作台',
-        description: '本地优先的文件、知识工作流与多智能体编排。数据保存在用户本机，PWA 离线可用。',
+        description: '本地优先的文件、知识工作流与多智能体编排。文件保存在用户本机，PWA 离线可用。',
         url: SITE_URL,
         locale: 'zh_CN',
       },
@@ -53,7 +58,7 @@ export const metadata: Metadata = {
     card: 'summary_large_image',
     title: IS_CN_BUILD ? '怡氧®AI — AI 原生创作工作台' : 'EO2Weave — AI-native creator workspace',
     description: IS_CN_BUILD
-      ? '本地优先的文件、知识工作流与多智能体编排。数据保存在用户本机，PWA 离线可用。'
+      ? '本地优先的文件、知识工作流与多智能体编排。文件保存在用户本机，PWA 离线可用。'
       : 'Local-first files, knowledge workflows, and multi-agent orchestration. Your data stays on your machine; PWA offline-ready.',
   },
   ...metadataByRegion,
