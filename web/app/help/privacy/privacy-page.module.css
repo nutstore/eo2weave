@@ -136,6 +136,15 @@
   line-height: 0.98;
 }
 
+/* Georgia draws ® at full cap height, so it reads as a second headline glyph
+ * next to CJK characters. Keep it a registered mark, not a design element. */
+.reg {
+  font-size: 0.38em;
+  font-weight: 400;
+  vertical-align: 0.65em;
+  letter-spacing: 0;
+}
+
 .heroLead {
   max-width: 720px;
   margin: 1.65rem 0 0;

@@ -13,7 +13,7 @@ type Section = {
 
 type Copy = {
   documentLabel: string
-  title: string
+  title: ReactNode
   lead: string
   appliesTo: string
   updated: string
@@ -139,7 +139,11 @@ const copy: Record<Locale, Copy> = {
   },
   zh: {
     documentLabel: '隐私政策',
-    title: '怡氧®AI 隐私政策',
+    title: (
+      <>
+        怡氧<span className={styles.reg}>®</span>AI 隐私政策
+      </>
+    ),
     lead: '我们重视您的个人信息安全。本政策说明我们在提供本产品时收集和使用哪些信息、如何保存和提供这些信息，以及您如何管理自己的信息。请在使用前阅读本政策。',
     appliesTo: '怡氧®AI 网站与浏览器扩展',
     updated: '最近更新',
