@@ -124,7 +124,7 @@ export function ModelsPage({ locale }: { locale: Locale }) {
             <span>怡氧®AI</span>
           </Link>
           <div className={styles.headerActions}>
-            <Link className={styles.productLink} href="/help/privacy/">
+            <Link className={styles.productLink} href="/help/privacy">
               {text.privacyLink} <span aria-hidden="true">↗</span>
             </Link>
           </div>
