@@ -128,10 +128,13 @@ export const MAX_PACKAGE_FILE_BYTES = 8 * 1024 * 1024
 /**
  * Cap on packages per registry catalog: the management page fetches a
  * manifest preview per package, so an unbounded catalog would launch
- * unbounded requests and rendering work. 50 packages is far above any
- * legitimate catalog.
+ * unbounded requests and rendering work. The preview pass is already
+ * bounded by its own concurrency limit and per-fetch byte cap, so this
+ * ceiling only needs to reject a deliberately hostile catalog. Kept in
+ * sync with the web copy (MAX_REGISTRY_PACKAGES = 200) — the two validators
+ * must accept the same catalogs or a registry works in one surface only.
  */
-export const MAX_REGISTRY_PACKAGES = 50
+export const MAX_REGISTRY_PACKAGES = 200
 
 const manifestCache = new Map<string, { data: RegistryManifest; ts: number }>()
 

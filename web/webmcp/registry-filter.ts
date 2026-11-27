@@ -4,6 +4,8 @@
  * be unit-tested without React rendering.
  */
 
+import { MAX_REGISTRY_PACKAGES } from '@/webmcp/package-registry-client'
+
 /** A tool entry cached from a package manifest preview. */
 export interface PreviewTool {
   name: string
@@ -95,15 +97,19 @@ export function reconcileToolIndex(
   return changed ? next : index
 }
 
+/** The package validator accepts at most 100 tools per manifest. */
+export const MAX_PREVIEW_TOOLS = 100
+
 /**
  * Aggregate cap on indexed tool names/descriptions. Each package manifest is
  * already bounded (MAX_PREVIEW_TOOLS), but the user can add many catalogs —
  * without an aggregate bound the section retains every tool of every added
  * registry (finding: "Search metadata grows without bound"). Whole
  * registries are evicted oldest-first (Map preserves insertion order) until
- * the index fits, which keeps the most recently added catalog searchable.
+ * the index fits. The budget holds one full accepted catalog, so a large
+ * registry never evicts its own entire search index.
  */
-export const MAX_INDEXED_TOOLS = 2_000
+export const MAX_INDEXED_TOOLS = MAX_REGISTRY_PACKAGES * MAX_PREVIEW_TOOLS
 
 /** Trim `index` to at most `max` indexed tools; same map when already under. */
 export function boundToolIndex(index: ToolIndex, max: number = MAX_INDEXED_TOOLS): ToolIndex {
@@ -173,16 +179,6 @@ export function toolMatchCount(
     tool => matchesQuery(tool.name, query) || matchesQuery(tool.description, query),
   ).length
 }
-
-/**
- * Upper bound on previewed/indexed tools per package — mirrors the package
- * validator's 1–100 tool limit (`validateManifest` in
- * `@creatorweave/shared/webmcp-adapter`): a manifest listing more tools is
- * an invalid package and fails its preview instead of rendering or indexing
- * an unbounded row list (the 512 KiB preview byte cap bounds the BODY, not
- * the row count).
- */
-export const MAX_PREVIEW_TOOLS = 100
 
 /**
  * Concurrent manifest-preview fetch cap (finding: "Large catalogs overload

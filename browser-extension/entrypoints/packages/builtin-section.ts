@@ -8,6 +8,7 @@
 
 import type { ManagedWebMCPPackage } from '../webmcp/package-client'
 import { buildManagedCard, classifyPackage, createSection } from './shared'
+import type { PackageSearch } from './package-search'
 
 export interface BuiltinSection {
   /** Render this section from a successful package load. */
@@ -20,6 +21,7 @@ export function createBuiltinSection(
   host: HTMLElement,
   refresh: () => void,
   summary?: HTMLElement,
+  search?: PackageSearch,
 ): BuiltinSection {
   const shell = createSection(host, {
     id: 'builtin',
@@ -32,13 +34,14 @@ export function createBuiltinSection(
       shell.error.clear()
       const builtins = entries.filter(entry => classifyPackage(entry) === 'builtin')
       shell.list.replaceChildren()
+      search?.rowsChanged()
       shell.setCount(builtins.length)
       if (!builtins.length) {
         shell.empty('webmcpPackagesEmptyBuiltin')
         return
       }
       for (const entry of builtins) {
-        shell.list.append(buildManagedCard(entry, { source: 'builtin', error: shell.error, refresh }))
+        shell.list.append(buildManagedCard(entry, { source: 'builtin', error: shell.error, refresh, search }))
       }
     },
     fail(error) {

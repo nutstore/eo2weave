@@ -504,3 +504,111 @@ describe('registry section feedback', () => {
     expect(toast.getAttribute('aria-hidden')).toBe('true')
   }, 10000)
 })
+
+describe('registry section preview updates', () => {
+  it('limits previews for a 200-package catalog and preserves rows as they arrive', async () => {
+    const packages = Array.from({ length: 200 }, (_, index) => ({ ...pkgA, id: `com.example.pkg${index}` }))
+    const releases: Array<() => void> = []
+    let active = 0
+    let peak = 0
+    const h = await setup({
+      state: () => ({ registries: [registry], installed: [], activations: {}, persisted: true }),
+      handlers: {
+        webmcp_registry_catalog: { manifest: { name: 'Example', packages } },
+        webmcp_registry_preview: async message => {
+          active += 1
+          peak = Math.max(peak, active)
+          await new Promise<void>(resolve => releases.push(resolve))
+          active -= 1
+          return { tools: [{ name: `${String(message.packageId)}.tool`, description: 'previewed' }] }
+        },
+      },
+    })
+    const rows = [...h.document.querySelectorAll('.pkg-row')]
+    expect(rows).toHaveLength(200)
+    expect(active).toBe(6)
+    // A state reload while requests are pending must reuse the same requests.
+    h.refresh()
+    const currentRows = [...h.document.querySelectorAll('.pkg-row')]
+    for (let completed = 0; completed < packages.length;) {
+      const batch = releases.splice(0)
+      expect(batch.length).toBeGreaterThan(0)
+      batch.forEach(release => release())
+      completed += batch.length
+      await settle()
+      expect([...h.document.querySelectorAll('.pkg-row')]).toEqual(currentRows)
+    }
+    expect(peak).toBe(6)
+    expect(h.send.mock.calls.filter(([message]) => message.type === 'webmcp_registry_preview')).toHaveLength(200)
+    for (const [index, row] of currentRows.entries()) {
+      expect(row.querySelector('.tool-chip')?.textContent).toBe(`${packages[index].id}.tool`)
+    }
+  })
+
+  it('skips queued previews from the previous catalog after a refresh', async () => {
+    const oldPackages = Array.from({ length: 12 }, (_, index) => ({ ...pkgA, id: `com.example.old${index}` }))
+    let release: () => void = () => {}
+    const gate = new Promise<void>(resolve => { release = resolve })
+    const h = await setup({
+      state: () => ({ registries: [registry], installed: [], activations: {}, persisted: true }),
+      handlers: {
+        webmcp_registry_catalog: message => ({ manifest: { name: 'Example', packages: message.force ? [pkgB] : oldPackages } }),
+        webmcp_registry_preview: async message => {
+          await gate
+          return { tools: [{ name: `${String(message.packageId)}.tool`, description: 'previewed' }] }
+        },
+      },
+    })
+    expect(h.send.mock.calls.filter(([message]) => message.type === 'webmcp_registry_preview')).toHaveLength(6)
+    buttonByLabel(h.document, 'webmcpPackagesRefresh')!.click()
+    await settle()
+    release()
+    await settle()
+    const requests = h.send.mock.calls.filter(([message]) => message.type === 'webmcp_registry_preview')
+    expect(requests.map(([message]) => message.packageId)).toEqual([
+      ...oldPackages.slice(0, 6).map(pkg => pkg.id),
+      pkgB.id,
+    ])
+    expect(h.document.querySelectorAll('.pkg-row')).toHaveLength(1)
+    expect(h.document.querySelector('.tool-chip')?.textContent).toBe(`${pkgB.id}.tool`)
+  })
+
+  it('lands each preview on its own row instead of rebuilding the list', async () => {
+    // Every landed preview used to call rerender(), so a 50-package catalog
+    // rebuilt the whole list 50 times — that is what made the page crawl. The
+    // rows built by the first paint must survive the arrivals, and each preview
+    // must show up in ITS row.
+    let release: () => void = () => {}
+    const gate = new Promise<void>(resolve => { release = resolve })
+    const h = await setup({
+      state: () => ({ registries: [registry], installed: [], activations: {}, persisted: true }),
+      handlers: {
+        webmcp_registry_catalog: {
+          manifest: { manifestUrl: registry.manifestUrl, name: 'Example', packages: [pkgA, pkgB] },
+        },
+        webmcp_registry_preview: async message => {
+          await gate
+          return { tools: [{ name: `${String(message.packageId)}.tool`, description: 'previewed' }] }
+        },
+      },
+    })
+
+    // Nothing has landed yet: the rows exist, no tools are shown.
+    const rowsBefore = [...h.document.querySelectorAll('.pkg-row')]
+    expect(rowsBefore).toHaveLength(2)
+    expect(h.document.querySelectorAll('.tool-chip')).toHaveLength(0)
+
+    release()
+    await settle()
+
+    const rowsAfter = [...h.document.querySelectorAll('.pkg-row')]
+    expect(rowsAfter).toHaveLength(2)
+    // SAME element instances: the arrivals updated rows in place.
+    expect(rowsAfter[0]).toBe(rowsBefore[0])
+    expect(rowsAfter[1]).toBe(rowsBefore[1])
+    // …and each preview landed on its own row.
+    expect(rowsAfter[0].querySelectorAll('.tool-chip')).toHaveLength(1)
+    expect(rowsAfter[0].textContent).toContain(`${pkgA.id}.tool`)
+    expect(rowsAfter[1].textContent).toContain(`${pkgB.id}.tool`)
+  })
+})

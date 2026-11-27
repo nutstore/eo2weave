@@ -3,6 +3,7 @@ import {
   boundToolIndex,
   indexedTools,
   MAX_INDEXED_TOOLS,
+  MAX_PREVIEW_TOOLS,
   packageMatchesFilter,
   reconcileToolIndex,
   runPreviewPass,
@@ -15,6 +16,7 @@ import {
   type PreviewTool,
   type ToolIndex,
 } from '@/webmcp/registry-filter'
+import { MAX_REGISTRY_PACKAGES } from '@/webmcp/package-registry-client'
 
 const TOOLS: PreviewTool[] = [
   { name: 'create_issue', description: 'Create a GitHub issue' },
@@ -122,6 +124,24 @@ describe('boundToolIndex', () => {
     const index: ToolIndex = new Map([[toolIndexKey('https://a.example', 'pkg'), entry(3)]])
     expect(boundToolIndex(index, 10)).toBe(index)
     expect(MAX_INDEXED_TOOLS).toBeGreaterThan(0)
+  })
+
+  it('keeps a full accepted catalog searchable at the per-package tool limit', () => {
+    const url = 'https://large.example'
+    const index: ToolIndex = new Map(Array.from({ length: MAX_REGISTRY_PACKAGES }, (_, pkg) => [
+      toolIndexKey(url, `pkg${pkg}`),
+      { version: '1.0.0', tools: Array.from({ length: MAX_PREVIEW_TOOLS }, (_, tool) => ({
+        name: `pkg${pkg}_tool${tool}`, description: '',
+      })) },
+    ]))
+    const bounded = boundToolIndex(index)
+    expect(bounded.size).toBe(MAX_REGISTRY_PACKAGES)
+    expect(packageMatchesFilter(
+      { id: 'pkg0', version: '1.0.0', description: '' }, bounded.get(toolIndexKey(url, 'pkg0')), 'pkg199_tool99',
+    )).toBe(false)
+    expect(packageMatchesFilter(
+      { id: 'pkg199', version: '1.0.0', description: '' }, bounded.get(toolIndexKey(url, 'pkg199')), 'pkg199_tool99',
+    )).toBe(true)
   })
 
   it('evicts the oldest registries whole until the retained tools fit', () => {

@@ -19,6 +19,7 @@ import {
   type RegistryListResult,
 } from '../webmcp/registry-client-page'
 import type { PackageRegistry, RegistryManifest, RegistryManifestPackage } from '../webmcp/registry-client'
+import type { PackageSearch } from './package-search'
 import {
   button,
   createSection,
@@ -42,6 +43,7 @@ export function createRegistrySection(
   host: HTMLElement,
   refresh: () => void,
   summary?: HTMLElement,
+  search?: PackageSearch,
 ): RegistrySection {
   const shell = createSection(host, {
     id: 'registry',
@@ -80,6 +82,33 @@ export function createRegistrySection(
    */
   const previewInFlight = new Map<string, Promise<boolean>>()
   const previewInFlightEpoch = new Map<Promise<boolean>, number>()
+  /**
+   * Bounded concurrency for preview fetches. A catalog can list dozens of
+   * packages; firing one manifest request per package at once floods the
+   * network stack and (before the in-place row update below) landed a
+   * whole-list rebuild per response. Same budget as the web settings section.
+   */
+  const PREVIEW_CONCURRENCY = 6
+  let previewActive = 0
+  const previewWaiters: Array<() => void> = []
+  async function withPreviewSlot<T>(work: () => Promise<T>): Promise<T> {
+    if (previewActive >= PREVIEW_CONCURRENCY) {
+      await new Promise<void>(resolve => previewWaiters.push(resolve))
+    }
+    previewActive += 1
+    try {
+      return await work()
+    } finally {
+      previewActive -= 1
+      previewWaiters.shift()?.()
+    }
+  }
+  /**
+   * Live row slots for landed previews, keyed like `toolPreviews`. A preview
+   * updates ITS row in place; only a row that is no longer on screen (a
+   * re-render replaced the list) falls back to a full redraw.
+   */
+  const previewSlots = new Map<string, { row: HTMLElement; host: HTMLElement; tools: HTMLElement; pkg: RegistryManifestPackage }>()
   /**
    * Bumped on every refresh/removal of a registry's catalog. A catalog or
    * preview response that started under an OLDER epoch must not land: writing
@@ -133,8 +162,13 @@ export function createRegistrySection(
     const work = (async (): Promise<boolean> => {
       if (toolPreviews.has(key) || previewFailures.has(key)) return false
       try {
-        const tools = await previewRegistryPackage(registry, pkg)
-        if ((catalogEpochs.get(registry.manifestUrl) ?? 0) !== epoch) return false
+        const tools = await withPreviewSlot(async () => {
+          // A refresh can replace the catalog while this task waits for a
+          // slot. Skip its request so stale work cannot delay new previews.
+          if ((catalogEpochs.get(registry.manifestUrl) ?? 0) !== epoch) return undefined
+          return previewRegistryPackage(registry, pkg)
+        })
+        if (!tools || (catalogEpochs.get(registry.manifestUrl) ?? 0) !== epoch) return false
         toolPreviews.set(key, tools)
         return true
       } catch {
@@ -156,6 +190,35 @@ export function createRegistrySection(
   function clearToolPreviews(manifestUrl: string): void {
     for (const key of [...toolPreviews.keys()]) if (key.startsWith(`${manifestUrl}::`)) toolPreviews.delete(key)
     for (const key of [...previewFailures]) if (key.startsWith(`${manifestUrl}::`)) previewFailures.delete(key)
+  }
+
+  /** Version + tool count line; the count is VERIFIED once a preview landed. */
+  function previewHostText(
+    pkg: RegistryManifestPackage,
+    preview?: Array<{ name: string; description: string }>,
+  ): string {
+    return [
+      t('webmcpPackagesVersion', pkg.version),
+      preview
+        ? t('webmcpPackagesToolsCount', String(preview.length))
+        : `${t('webmcpPackagesToolsCount', String(pkg.toolCount))} ${t('webmcpPackagesToolsCountUnverified')}`,
+    ].join(' · ')
+  }
+
+  /**
+   * Land a landed preview on its OWN row. Returns false when the row is gone
+   * (the list was rebuilt since), so the caller can fall back to a redraw.
+   */
+  function applyPreviewToRow(key: string): boolean {
+    const slot = previewSlots.get(key)
+    const tools = toolPreviews.get(key)
+    if (!slot || !tools) return false
+    if (!slot.host.isConnected) return false
+    slot.host.textContent = previewHostText(slot.pkg, tools)
+    slot.tools.replaceChildren(...Array.from(toolChips(tools).childNodes))
+    slot.tools.style.display = ''
+    search?.update(slot.row, [slot.pkg.id, slot.pkg.description, ...tools.map(tool => tool.name)])
+    return true
   }
 
   /** Redraw from the last known state (catalog/preview arrivals). */
@@ -223,7 +286,19 @@ export function createRegistrySection(
       body.append(hint)
     } else {
       for (const pkg of catalog.packages) {
-        void loadToolPreview(registry, pkg).then(changed => { if (changed) rerender() })
+        const key = `${registry.manifestUrl}::${pkg.id}`
+        // Only ask for a preview the caches do not already answer: `render`
+        // runs on every state arrival, and re-entering the loader for all
+        // packages each time amplified the request count.
+        if (!toolPreviews.has(key) && !previewFailures.has(key)) {
+          void loadToolPreview(registry, pkg).then(changed => {
+            if (!changed) return
+            // Land it on its row. Redrawing the whole section per response
+            // turned a 50-package catalog into 50 full list rebuilds, which
+            // is what made this page crawl.
+            if (!applyPreviewToRow(key)) rerender()
+          })
+        }
         body.append(buildPackageRow(registry, pkg))
       }
     }
@@ -309,20 +384,21 @@ export function createRegistrySection(
     const preview = toolPreviews.get(previewKey)
     const host = document.createElement('div')
     host.className = 'host'
-    host.textContent = [
-      t('webmcpPackagesVersion', pkg.version),
-      preview
-        ? t('webmcpPackagesToolsCount', String(preview.length))
-        : `${t('webmcpPackagesToolsCount', String(pkg.toolCount))} ${t('webmcpPackagesToolsCountUnverified')}`,
-    ].join(' · ')
+    host.textContent = previewHostText(pkg, preview)
     const desc = document.createElement('div')
     desc.className = 'desc'
     desc.textContent = pkg.description
     const titleLine = document.createElement('div')
     titleLine.className = 'title-line'
     titleLine.append(name, sourceChip('registry'), host)
-    body.append(titleLine, desc)
-    if (preview?.length) body.append(toolChips(preview))
+    // The tool area is ALWAYS in the row (hidden while empty) so a preview that
+    // lands later fills it in place instead of triggering a full-list redraw.
+    const toolsSlot = document.createElement('div')
+    toolsSlot.className = 'tools'
+    if (preview?.length) toolsSlot.append(...Array.from(toolChips(preview).childNodes))
+    else toolsSlot.style.display = 'none'
+    body.append(titleLine, desc, toolsSlot)
+    previewSlots.set(previewKey, { row, host, tools: toolsSlot, pkg })
 
     const isInstalled = installed.has(pkg.id)
     const stateUnknown = isInstalled && activationUnknown.has(pkg.id)
@@ -438,6 +514,7 @@ export function createRegistrySection(
       actions.append(install)
     }
     row.append(body, actions)
+    search?.update(row, [pkg.id, pkg.description, ...(preview ?? []).map(tool => tool.name)], preview !== undefined)
     return row
   }
 
@@ -485,6 +562,7 @@ export function createRegistrySection(
     })
     actions.append(uninstall)
     row.append(body, actions)
+    search?.update(row, [id])
     return row
   }
 
@@ -526,7 +604,10 @@ export function createRegistrySection(
     }
 
     const list = shell.list
+    // The rows built below register their own preview slots.
+    previewSlots.clear()
     list.replaceChildren()
+    search?.rowsChanged()
     shell.setCount(state.registries.length)
     if (!state.registries.length) {
       shell.empty('webmcpPackagesEmptyRegistry')
