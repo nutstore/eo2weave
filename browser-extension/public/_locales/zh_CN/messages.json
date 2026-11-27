@@ -121,6 +121,22 @@
   "webmcpPackagesPageTitle": {
     "message": "WebMCP 包管理"
   },
+  "webmcpPackagesSearchPlaceholder": {
+    "message": "搜索包或工具…"
+  },
+  "webmcpPackagesSearchClear": {
+    "message": "清空"
+  },
+  "webmcpPackagesSearchResults": {
+    "message": "匹配 $MATCHED$ / $TOTAL$ 个包",
+    "placeholders": {
+      "matched": { "content": "$1" },
+      "total": { "content": "$2" }
+    }
+  },
+  "webmcpPackagesSearchNoResults": {
+    "message": "没有匹配的包，请尝试其他包名或工具名。"
+  },
   "webmcpPackagesPageSubtitle": {
     "message": "一处管理三种来源的 WebMCP 包：扩展内置、从镜像源安装、以及你或 agent 自建的包。启用后，工具会注册到 URL 匹配的页面。"
   },

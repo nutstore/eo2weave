@@ -396,6 +396,22 @@
   "webmcpPackagesPageTitle": {
     "message": "WebMCP packages"
   },
+  "webmcpPackagesSearchPlaceholder": {
+    "message": "Search packages or tools…"
+  },
+  "webmcpPackagesSearchClear": {
+    "message": "Clear"
+  },
+  "webmcpPackagesSearchResults": {
+    "message": "$MATCHED$ of $TOTAL$ packages",
+    "placeholders": {
+      "matched": { "content": "$1" },
+      "total": { "content": "$2" }
+    }
+  },
+  "webmcpPackagesSearchNoResults": {
+    "message": "No matching packages. Try another package or tool name."
+  },
   "webmcpPackagesPageSubtitle": {
     "message": "Manage WebMCP packages from every source in one place: built into the extension, installed from a registry, and authored by you or your agent. Enable a package to expose its tools on matching pages."
   },

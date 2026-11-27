@@ -100,9 +100,16 @@ export const MAX_PACKAGE_FILE_BYTES = 8 * 1024 * 1024
  * Cap on packages per registry catalog (finding: "Large catalogs overwhelm
  * settings page"): the settings section fetches a manifest preview per
  * package, so an unbounded catalog would launch unbounded requests and
- * rendering work. 50 packages is far above any legitimate catalog.
+ * rendering work.
+ *
+ * Raised to 200: the per-card preview pass is already bounded by
+ * PREVIEW_CONCURRENCY plus the per-preview byte cap, so the catalog may grow
+ * well past the original 50 without unbounded work. The cap now only rejects
+ * a deliberately hostile catalog, and a real one (the external WebMCP
+ * packages repo, which passed 65) no longer fails the WHOLE manifest —
+ * crossing the limit throws and hides every package, not just the extras.
  */
-export const MAX_REGISTRY_PACKAGES = 50
+export const MAX_REGISTRY_PACKAGES = 200
 
 const manifestCache = new Map<string, { data: RegistryManifest; ts: number }>()
 

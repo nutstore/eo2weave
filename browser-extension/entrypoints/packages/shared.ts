@@ -11,6 +11,7 @@ import {
   setManagedPackageConfig,
   type ManagedWebMCPPackage,
 } from '../webmcp/package-client'
+import type { PackageSearch } from './package-search'
 
 /** Provenance of a package — DERIVED from mounts + install records, never declared. */
 export type PackageSource = 'builtin' | 'registry' | 'mine'
@@ -207,6 +208,7 @@ const MAX_TOOL_CHIPS = 6
 export interface ManagedCardOptions {
   source: PackageSource
   error: ErrorBox
+  search?: PackageSearch
   /** Re-run the page's data load after a mutation. */
   refresh: () => void
   /** Draw the delete action (the rw mount only — built-ins cannot be deleted). */
@@ -316,6 +318,12 @@ export function buildManagedCard(entry: ManagedWebMCPPackage, options: ManagedCa
     actions.append(remove)
   }
   card.append(body, actions)
+  options.search?.update(card, [
+    entry.manifest?.id ?? entry.directory,
+    entry.directory,
+    entry.manifest?.description ?? '',
+    ...tools.map(tool => tool.name),
+  ])
   return card
 }
 

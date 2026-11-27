@@ -9,6 +9,7 @@
 
 import type { ManagedWebMCPPackage } from '../webmcp/package-client'
 import { buildManagedCard, classifyPackage, createSection, t } from './shared'
+import type { PackageSearch } from './package-search'
 
 export interface MineSection {
   /** Render from a package load plus the registry install records. */
@@ -26,6 +27,7 @@ export function createMineSection(
   host: HTMLElement,
   refresh: () => void,
   summary?: HTMLElement,
+  search?: PackageSearch,
 ): MineSection {
   const shell = createSection(host, {
     id: 'mine',
@@ -42,6 +44,7 @@ export function createMineSection(
       // install identity `classifyPackage` matches on.
       const mine = entries.filter(entry => classifyPackage(entry, installedDirectories) === 'mine')
       shell.list.replaceChildren()
+      search?.rowsChanged()
       shell.setCount(mine.length)
       if (!mine.length) {
         // A catalog read from an unlistable user mount contains no authored
@@ -56,6 +59,7 @@ export function createMineSection(
           source: 'mine',
           error: shell.error,
           refresh,
+          search,
           // The rw mount is deletable, except for a package discovered as
           // read-only (the mount decides, not the section).
           deletable: entry.access === 'read-write',

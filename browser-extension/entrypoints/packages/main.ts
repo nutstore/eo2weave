@@ -12,6 +12,7 @@ import { listRegistries, type RegistryListResult } from '../webmcp/registry-clie
 import { createBuiltinSection } from './builtin-section'
 import { createDiagnosticsSection } from './diagnostics-section'
 import { createMineSection } from './mine-section'
+import { createPackageSearch } from './package-search'
 import { createRegistrySection } from './registry-section'
 import { SECTION_LOAD_TIMEOUT_MS, t, withTimeout } from './shared'
 
@@ -28,26 +29,47 @@ for (const [id, key] of [
 // The static <title> is English-only; keep the tab localized like the page.
 document.title = t('webmcpPackagesPageTabTitle')
 
+const searchInput = document.getElementById('packageSearch') as HTMLInputElement
+searchInput.placeholder = t('webmcpPackagesSearchPlaceholder')
+searchInput.setAttribute('aria-label', t('webmcpPackagesSearchPlaceholder'))
+const searchClear = document.getElementById('packageSearchClear') as HTMLButtonElement
+searchClear.textContent = t('webmcpPackagesSearchClear')
+const search = createPackageSearch(
+  searchInput,
+  searchClear,
+  document.getElementById('packageSearchStatus')!,
+  (matched, total) => {
+    const count = t('webmcpPackagesSearchResults', [String(matched), String(total)])
+    return matched ? count : `${count} · ${t('webmcpPackagesSearchNoResults')}`
+  },
+)
+
 const builtin = createBuiltinSection(
   document.getElementById('builtinSection')!,
   refresh,
   document.getElementById('summaryBuiltin')!,
+  search,
 )
 const registry = createRegistrySection(
   document.getElementById('registrySection')!,
   refresh,
   document.getElementById('summaryRegistry')!,
+  search,
 )
 const mine = createMineSection(
   document.getElementById('mineSection')!,
   refresh,
   document.getElementById('summaryMine')!,
+  search,
 )
 const diagnostics = createDiagnosticsSection(document.getElementById('diagnosticsSection')!)
 
 let generation = 0
+/** Last time a full load was kicked off (focus throttling below). */
+let lastRefreshAt = 0
 
 function refresh(): void {
+  lastRefreshAt = Date.now()
   void renderAll()
 }
 
@@ -124,5 +146,17 @@ async function renderAll(): Promise<void> {
 chrome.runtime.onMessage.addListener(message => {
   if (message?.type === 'webmcp_packages_changed' || message?.type === 'webmcpPackagesRegistryChanged') refresh()
 })
-window.addEventListener('focus', refresh)
+/**
+ * Refocusing the tab must not restart the whole load. Every focus used to
+ * re-list the catalog, re-fetch every registry and rebuild every row — with a
+ * 50-package catalog that is a visible stall each time the user comes back to
+ * the page (switching tabs made it feel permanently slow). Explicit refresh
+ * paths (package-change messages, the per-registry Refresh button) still run
+ * immediately; only the focus nudge is throttled.
+ */
+const FOCUS_REFRESH_MIN_INTERVAL_MS = 30_000
+window.addEventListener('focus', () => {
+  if (Date.now() - lastRefreshAt < FOCUS_REFRESH_MIN_INTERVAL_MS) return
+  refresh()
+})
 refresh()
