@@ -29,6 +29,9 @@ import {
 import { useT } from '@/i18n'
 import { isLLMGatewayConfigured } from '@/agent/providers/llm-gateway-provider'
 
+// import.meta.env is not available in the Next.js web bundle.
+const DEV = process.env.NODE_ENV !== 'production'
+
 export interface UseGatewayLoginResult {
   /** Current auth flow state — null when idle */
   authState: AuthState | null
@@ -72,7 +75,7 @@ export function useGatewayLogin(): UseGatewayLoginResult {
 
     setIsRunning(true)
     try {
-      console.log('[useGatewayLogin] starting device code flow...')
+      if (DEV) console.log('[useGatewayLogin] starting device code flow...')
       // Capture the attempt start BEFORE approval: approval can take
       // minutes, and a logout during it must invalidate this attempt.
       const attemptStartedAt = Date.now()
@@ -82,14 +85,14 @@ export function useGatewayLogin(): UseGatewayLoginResult {
         }
       }, attempt.signal)
       attempt.signal.throwIfAborted()
-      console.log('[useGatewayLogin] got tokens, saving...')
+      if (DEV) console.log('[useGatewayLogin] got tokens, saving...')
 
       await applyGatewayLoginTokens(tokens.access_token, {
         signal: attempt.signal,
         attemptStartedAt,
         onCommit: () => persistDeviceLoginTokens(tokens, clientId, baseURL),
       })
-      console.log('[useGatewayLogin] login complete, returning true')
+      if (DEV) console.log('[useGatewayLogin] login complete, returning true')
 
       if (mountedRef.current && attemptRef.current === attempt) {
         setAuthState({ status: 'success' })
