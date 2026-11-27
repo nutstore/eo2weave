@@ -10,13 +10,15 @@ function setup() {
   const clear = doc.querySelector('button')!
   const status = doc.querySelector('p')!
   const host = doc.querySelector('#rows')!
-  const format = vi.fn((matched: number, total: number) => matched ? `${matched}/${total}` : `No results (0/${total})`)
+  const format = vi.fn((matched: number, total: number, unknown = 0) => unknown
+    ? `${matched}/${total}, incomplete: ${unknown}`
+    : matched ? `${matched}/${total}` : `No results (0/${total})`)
   const search = createPackageSearch(input, clear, status, format)
   return {
     input, clear, status, host, search, format,
-    row(fields: string[]) {
+    row(fields: string[], toolsKnown = true) {
       const row = doc.createElement('div')
-      search.update(row, fields)
+      search.update(row, fields, toolsKnown)
       host.append(row)
       return row
     },
@@ -88,6 +90,17 @@ describe('package search controller', () => {
     await Promise.resolve()
     expect(h.status.textContent).toBe('1/1')
     expect(h.input.value).toBe('late_tool')
+  })
+
+  it('reports incomplete results until unknown tool metadata is verified', async () => {
+    const h = setup()
+    const row = h.row(['registry.alpha'], false)
+    await h.query('missing_tool')
+    expect(row.hidden).toBe(true)
+    expect(h.status.textContent).toBe('0/1, incomplete: 1')
+    h.search.update(row, ['registry.alpha', 'other_tool'])
+    await Promise.resolve()
+    expect(h.status.textContent).toBe('No results (0/1)')
   })
 
   it('coalesces result counts and discards replaced rows while retaining the query', async () => {

@@ -9,7 +9,7 @@ async function settle(): Promise<void> {
   for (let i = 0; i < 8; i++) await new Promise(resolve => setTimeout(resolve, 0))
 }
 
-async function setup() {
+async function setup(previewFails = false) {
   const win = new Window({ url: 'chrome-extension://test/packages.html' })
   const doc = win.document as unknown as Document
   doc.body.innerHTML = '<input id="search"><button id="clear">Clear</button><p id="status"></p><div id="builtin"></div><div id="mine"></div><div id="registry"></div>'
@@ -22,6 +22,7 @@ async function setup() {
     if (message.type === 'webmcp_registry_catalog') return { ok: true, manifest: { name: 'Example', packages: [pkg] } }
     if (message.type === 'webmcp_registry_preview') {
       await gate
+      if (previewFails) return { ok: false, error: 'Preview unavailable' }
       return { ok: true, tools: Array.from({ length: 8 }, (_, i) => ({ name: i === 7 ? 'late_hidden_tool' : `tool${i}`, description: '' })) }
     }
     return { ok: true }
@@ -36,7 +37,8 @@ async function setup() {
   const input = doc.getElementById('search') as HTMLInputElement
   const status = doc.getElementById('status')!
   const clear = doc.getElementById('clear') as HTMLButtonElement
-  const search = createPackageSearch(input, clear, status, (matched, total) => `${matched}/${total}`)
+  const format = vi.fn((matched: number, total: number) => `${matched}/${total}`)
+  const search = createPackageSearch(input, clear, status, format)
   const builtin = createBuiltinSection(doc.getElementById('builtin')!, vi.fn(), undefined, search)
   const mine = createMineSection(doc.getElementById('mine')!, vi.fn(), undefined, search)
   const registry = createRegistrySection(doc.getElementById('registry')!, vi.fn(), undefined, search)
@@ -55,7 +57,7 @@ async function setup() {
   const rows = () => [...doc.querySelectorAll<HTMLElement>('.card.pkg, .pkg-row')]
   const visible = () => rows().filter(row => !row.hidden)
   const removeRegistry = () => { state.registries = []; state.installed = []; registry.render(state) }
-  return { doc, input, clear, status, send, release, query, render, rows, visible, removeRegistry }
+  return { doc, input, clear, status, send, release, query, render, rows, visible, removeRegistry, format }
 }
 
 it('searches every source, all tool names and orphan IDs without rebuilding rows or fetching', async () => {
@@ -86,10 +88,12 @@ it('matches a tool preview that arrives during a search and keeps the filter aft
   await h.query('late_hidden_tool')
   expect(h.visible()).toHaveLength(0)
   expect(h.status.textContent).toBe('0/4')
+  expect(h.format).toHaveBeenLastCalledWith(0, 4, 1)
   h.release()
   await settle()
   expect(h.visible()).toEqual([row])
   expect(h.status.textContent).toBe('1/4')
+  expect(h.format).toHaveBeenLastCalledWith(1, 4, 0)
   h.render()
   await settle()
   expect(h.input.value).toBe('late_hidden_tool')
@@ -98,6 +102,17 @@ it('matches a tool preview that arrives during a search and keeps the filter aft
   h.clear.click()
   await settle()
   expect(h.visible()).toHaveLength(4)
+})
+
+it('keeps search feedback incomplete when a registry tool preview fails', async () => {
+  const h = await setup(true)
+  await h.query('unknown_tool')
+  h.release()
+  await settle()
+  expect(h.format).toHaveBeenLastCalledWith(0, 4, 1)
+  h.removeRegistry()
+  await settle()
+  expect(h.format).toHaveBeenLastCalledWith(0, 2, 0)
 })
 
 it('updates totals when removing a registry without creating replacement rows', async () => {

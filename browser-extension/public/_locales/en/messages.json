@@ -412,6 +412,12 @@
   "webmcpPackagesSearchNoResults": {
     "message": "No matching packages. Try another package or tool name."
   },
+  "webmcpPackagesSearchIncomplete": {
+    "message": "Tool details are unavailable for $COUNT$ packages; search results may be incomplete.",
+    "placeholders": {
+      "count": { "content": "$1" }
+    }
+  },
   "webmcpPackagesPageSubtitle": {
     "message": "Manage WebMCP packages from every source in one place: built into the extension, installed from a registry, and authored by you or your agent. Enable a package to expose its tools on matching pages."
   },

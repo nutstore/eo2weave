@@ -38,8 +38,9 @@ const search = createPackageSearch(
   searchInput,
   searchClear,
   document.getElementById('packageSearchStatus')!,
-  (matched, total) => {
+  (matched, total, unknown) => {
     const count = t('webmcpPackagesSearchResults', [String(matched), String(total)])
+    if (unknown) return `${count} · ${t('webmcpPackagesSearchIncomplete', String(unknown))}`
     return matched ? count : `${count} · ${t('webmcpPackagesSearchNoResults')}`
   },
 )

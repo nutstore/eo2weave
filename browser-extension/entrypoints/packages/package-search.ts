@@ -1,5 +1,5 @@
 export interface PackageSearch {
-  update(row: HTMLElement, fields: string[]): void
+  update(row: HTMLElement, fields: string[], toolsKnown?: boolean): void
   /** Recount after a section removes rows, including an empty render. */
   rowsChanged(): void
 }
@@ -9,9 +9,9 @@ export function createPackageSearch(
   input: HTMLInputElement,
   clear: HTMLButtonElement,
   status: HTMLElement,
-  formatStatus: (matched: number, total: number) => string,
+  formatStatus: (matched: number, total: number, unknown: number) => string,
 ): PackageSearch {
-  const rows = new Map<HTMLElement, string>()
+  const rows = new Map<HTMLElement, { text: string; toolsKnown: boolean }>()
   let query = input.value.trim().toLowerCase()
   let statusPending = false
 
@@ -21,19 +21,24 @@ export function createPackageSearch(
     queueMicrotask(() => {
       statusPending = false
       let matched = 0
-      for (const row of rows.keys()) {
-        if (!row.isConnected) rows.delete(row)
-        else if (!row.hidden) matched += 1
+      let unknown = 0
+      for (const [row, entry] of rows) {
+        if (!row.isConnected) {
+          rows.delete(row)
+          continue
+        }
+        if (!row.hidden) matched += 1
+        if (!entry.toolsKnown) unknown += 1
       }
       // Keep the live region present so the first result update is announced.
-      status.textContent = query ? formatStatus(matched, rows.size) : ''
+      status.textContent = query ? formatStatus(matched, rows.size, unknown) : ''
     })
   }
 
   function applyQuery(): void {
     query = input.value.trim().toLowerCase()
     clear.hidden = !input.value
-    for (const [row, text] of rows) row.hidden = !text.includes(query)
+    for (const [row, entry] of rows) row.hidden = !entry.text.includes(query)
     scheduleStatus()
   }
 
@@ -55,9 +60,9 @@ export function createPackageSearch(
 
   return {
     rowsChanged: scheduleStatus,
-    update(row, fields) {
+    update(row, fields, toolsKnown = true) {
       const text = fields.join('\n').toLowerCase()
-      rows.set(row, text)
+      rows.set(row, { text, toolsKnown })
       row.dataset.packageSearchRow = ''
       row.hidden = !text.includes(query)
       scheduleStatus()

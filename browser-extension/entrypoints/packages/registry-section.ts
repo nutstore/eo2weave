@@ -514,7 +514,7 @@ export function createRegistrySection(
       actions.append(install)
     }
     row.append(body, actions)
-    search?.update(row, [pkg.id, pkg.description, ...(preview ?? []).map(tool => tool.name)])
+    search?.update(row, [pkg.id, pkg.description, ...(preview ?? []).map(tool => tool.name)], preview !== undefined)
     return row
   }
 

@@ -137,6 +137,12 @@
   "webmcpPackagesSearchNoResults": {
     "message": "没有匹配的包，请尝试其他包名或工具名。"
   },
+  "webmcpPackagesSearchIncomplete": {
+    "message": "$COUNT$ 个包的工具信息暂不可用，搜索结果可能不完整。",
+    "placeholders": {
+      "count": { "content": "$1" }
+    }
+  },
   "webmcpPackagesPageSubtitle": {
     "message": "一处管理三种来源的 WebMCP 包：扩展内置、从镜像源安装、以及你或 agent 自建的包。启用后，工具会注册到 URL 匹配的页面。"
   },
