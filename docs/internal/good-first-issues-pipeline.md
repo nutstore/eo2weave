@@ -22,7 +22,7 @@ Counts exclude, on purpose:
 
 A raw count over the TypeScript sources (`grep -ro "console\.log" web/components web/hooks --include='*.ts' --include='*.tsx' | wc -l`) returns **45**: 25 live ungated calls (the number above), 11 in already-guarded or never-executed code, and 9 code-viewer sample strings. Dropping the `--include` filters adds 6 matches from the `code-viewer/*.md` example docs (51 total), none of which execute.
 
-Not a candidate: "unify the size formatters". `formatBytes`/`formatSize` in `web/lib/utils.ts` already have unit tests (`web/lib/utils.test.ts`, since #119), and the three local variants (`web/storage/diagnostics.ts`, `web/components/sync/FileDiffViewer.tsx`, `web/skills/skill-resources.ts`) are deliberately different — see the #14 note in `skill-resources.ts`.
+Not a candidate: "unify the size formatters". `formatBytes` in `web/lib/utils.ts` already have unit tests (`web/lib/utils.test.ts`, since #119), and the three local variants (`web/storage/diagnostics.ts`, `web/components/sync/FileDiffViewer.tsx`, `web/skills/skill-resources.ts`) are deliberately different — see the #14 note in `skill-resources.ts`.
 
 ## Template (match the style of the closed batch #9-#18)
 

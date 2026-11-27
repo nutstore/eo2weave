@@ -16,7 +16,7 @@ import {
 } from 'lucide-react'
 // Canonical size formatter (Sourcery #125: the local copy here escalated only
 // to MB and drifted from every other size display in the app).
-import { formatSize } from '@/lib/utils'
+import { formatBytes } from '@/lib/utils'
 import {
   BrandButton,
   BrandDialog,
@@ -333,7 +333,7 @@ export function ExportConversationDialog({
               <Check className="h-4 w-4 shrink-0" />
               <span>
                 {t('conversation.export.saved') || 'Saved'}: {lastResult.filename}
-                ({formatSize(lastResult.size)})
+                ({formatBytes(lastResult.size)})
                 {lastResult.bundledFileCount ?
                   ` · ${lastResult.bundledFileCount} ${t('conversation.export.files') || 'files'}` : ''}
               </span>
@@ -371,5 +371,5 @@ export function ExportConversationDialog({
 // ============================================================================
 // Utility
 // ============================================================================
-// formatSize is imported from '@/lib/utils' (the canonical formatter) — the
+// formatBytes is imported from '@/lib/utils' (the canonical formatter) — the
 // local copy that only escalated to MB was removed (Sourcery #125).

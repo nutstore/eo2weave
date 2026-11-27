@@ -29,7 +29,7 @@ import {
   type ExportFormat,
   type ExportResult,
 } from '@/services/export/data-exporter'
-import { formatSize } from '@/lib/utils'
+import { formatBytes } from '@/lib/utils'
 
 //=============================================================================
 // Types
@@ -365,7 +365,7 @@ export function ExportPanel({
                   </div>
                   <div className="flex items-center gap-2 text-xs text-muted-foreground">
                     <span>{item.format.toUpperCase()}</span>
-                    <span>{formatSize(item.size)}</span>
+                    <span>{formatBytes(item.size)}</span>
                     <span>{formatTime(item.timestamp)}</span>
                   </div>
                 </div>

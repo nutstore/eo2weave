@@ -11,7 +11,7 @@
  */
 
 import type { FormatHandler, FormatReadResult } from '../../format-registry'
-import { formatSize } from '@/lib/utils'
+import { formatBytes } from '@/lib/utils'
 
 /** Supported image extensions */
 const IMAGE_EXTENSIONS = new Set([
@@ -182,7 +182,7 @@ export const imageHandler: FormatHandler = {
 
       const parts: string[] = [
         `[SVG Image] ${fileName}`,
-        `Size: ${formatSize(fileSize)}`,
+        `Size: ${formatBytes(fileSize)}`,
         `MIME: ${mimeType}`,
       ]
       if (width && height) {
@@ -202,7 +202,7 @@ export const imageHandler: FormatHandler = {
       `[Image] ${fileName}`,
       `Format: ${ext.toUpperCase()}`,
       `MIME: ${mimeType}`,
-      `Size: ${formatSize(fileSize)}`,
+      `Size: ${formatBytes(fileSize)}`,
     ]
     if (dims) {
       parts.push(`Dimensions: ${dims.width} × ${dims.height}`)
