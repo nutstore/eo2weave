@@ -66,6 +66,9 @@ import { getWorkspaceManager } from '@/opfs'
 import { useFolderAccessStore } from '@/store/folder-access.store'
 import { getRuntimeHandlesForProject } from '@/native-fs/directory-handle-manager'
 
+// import.meta.env is not available in the Next.js web bundle.
+const DEV = process.env.NODE_ENV !== 'production'
+
 interface WorkspaceLayoutProps {
   onBackToProjects?: () => void
   projectName?: string
@@ -543,7 +546,7 @@ export function WorkspaceLayout({
         manager.clearProjectSkills()
         await loadSkills()
 
-        console.log(`[WorkspaceLayout] Scanning project skills across ${handlesToScan.length} root(s)...`)
+        if (DEV) console.log(`[WorkspaceLayout] Scanning project skills across ${handlesToScan.length} root(s)...`)
 
         let allSkills: Skill[] = []
         let allResources: SkillResource[] = []
@@ -575,7 +578,7 @@ export function WorkspaceLayout({
           allErrors = allErrors.concat(result.errors)
         }
 
-        console.log(`[WorkspaceLayout] Scan result: ${allSkills.length} skills found`)
+        if (DEV) console.log(`[WorkspaceLayout] Scan result: ${allSkills.length} skills found`)
         if (allErrors.length > 0) {
           console.warn('[WorkspaceLayout] Scan errors:', allErrors)
         }
@@ -586,7 +589,7 @@ export function WorkspaceLayout({
         } else {
           manager.clearProjectSkills()
           await loadSkills()
-          console.log(
+          if (DEV) console.log(
             '[WorkspaceLayout] No project skills found (checked .claude/skills/ and .skills/)'
           )
         }
@@ -1197,7 +1200,7 @@ export function WorkspaceLayout({
               data={exportData}
               defaultFilename={exportFilename}
               onExportComplete={(result) => {
-                console.log('[WorkspaceLayout] Export completed:', result)
+                if (DEV) console.log('[WorkspaceLayout] Export completed:', result)
                 closeExportPanel()
               }}
               onClose={closeExportPanel}
