@@ -14,7 +14,7 @@
 
 Counts exclude `console.log` occurrences that live inside code-viewer sample strings (`web/components/code-viewer/*`) — they never execute. A raw `grep -c` therefore reads higher than the number above.
 
-Not a candidate: "unify the size formatters". `formatBytes`/`formatSize` in `web/lib/utils.ts` already have unit tests (`web/lib/utils.test.ts`, since #119), and the three local variants (`web/storage/diagnostics.ts`, `web/components/sync/FileDiffViewer.tsx`, `web/skills/skill-resources.ts`) are deliberately different — see the #14 note in `skill-resources.ts`.
+Not a candidate: "unify the size formatters". `formatBytes` in `web/lib/utils.ts` already have unit tests (`web/lib/utils.test.ts`, since #119), and the three local variants (`web/storage/diagnostics.ts`, `web/components/sync/FileDiffViewer.tsx`, `web/skills/skill-resources.ts`) are deliberately different — see the #14 note in `skill-resources.ts`.
 
 ## Template (match the style of the closed batch #9-#18)
 
