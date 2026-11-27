@@ -61,11 +61,13 @@ export function useWorkspaceRouteSync(projectId: string, workspaceId?: string) {
         const signature = `${projectId}:${pendingStep ?? 'none'}`
         if (blockedActivationLog.current !== signature) {
           blockedActivationLog.current = signature
-          console.log('[syncFromRoute] blocked by in-flight project activation', {
-            projectId,
-            activeProjectId: useProjectStore.getState().activeProjectId,
-            pendingStep,
-          })
+          if (process.env.NODE_ENV !== 'production') {
+            console.log('[syncFromRoute] blocked by in-flight project activation', {
+              projectId,
+              activeProjectId: useProjectStore.getState().activeProjectId,
+              pendingStep,
+            })
+          }
         }
       }
       return
@@ -81,12 +83,14 @@ export function useWorkspaceRouteSync(projectId: string, workspaceId?: string) {
     const syncFromRoute = async () => {
       const _projects = useProjectStore.getState().projects
       const _activeProjectId = useProjectStore.getState().activeProjectId
-      console.log('[syncFromRoute] enter', {
-        projectId,
-        workspaceId,
-        activeProjectId: _activeProjectId,
-        projectsCount: _projects.length,
-      })
+      if (process.env.NODE_ENV !== 'production') {
+        console.log('[syncFromRoute] enter', {
+          projectId,
+          workspaceId,
+          activeProjectId: _activeProjectId,
+          projectsCount: _projects.length,
+        })
+      }
 
       // Step 1: Validate project exists
       const projectExists = _projects.some((project) => project.id === projectId)
@@ -99,17 +103,21 @@ export function useWorkspaceRouteSync(projectId: string, workspaceId?: string) {
 
       // Step 2: Switch project if needed (this clears workspace state & loads new list)
       if (_activeProjectId !== projectId) {
-        console.log('[syncFromRoute] switching project', { from: _activeProjectId, to: projectId })
+        if (process.env.NODE_ENV !== 'production') {
+          console.log('[syncFromRoute] switching project', { from: _activeProjectId, to: projectId })
+        }
         const switchStartedAt = performance.now()
         const switched = await setActiveProject(projectId)
         // Pairs with the trace above: if this line never appears, activation is
         // still pending; `switched` plus the elapsed time says whether it
         // settled and how long the whole chain took.
-        console.log('[syncFromRoute] project switch settled', {
-          projectId,
-          switched,
-          elapsedMs: Math.round(performance.now() - switchStartedAt),
-        })
+        if (process.env.NODE_ENV !== 'production') {
+          console.log('[syncFromRoute] project switch settled', {
+            projectId,
+            switched,
+            elapsedMs: Math.round(performance.now() - switchStartedAt),
+          })
+        }
         if (!switched) {
           console.warn('[syncFromRoute] setActiveProject returned false')
           if (!cancelled) {
@@ -126,12 +134,14 @@ export function useWorkspaceRouteSync(projectId: string, workspaceId?: string) {
       const workspaces = useConversationContextStore.getState().workspaces
       const scopedWorkspaceIds = workspaces.map((w) => w.id)
       const activeWorkspaceId = useConversationContextStore.getState().activeWorkspaceId
-      console.log('[syncFromRoute] step3 workspaces loaded', {
-        count: workspaces.length,
-        scopedIds: scopedWorkspaceIds,
-        activeWorkspaceId,
-        hasTargetInScope: workspaceId ? scopedWorkspaceIds.includes(workspaceId) : null,
-      })
+      if (process.env.NODE_ENV !== 'production') {
+        console.log('[syncFromRoute] step3 workspaces loaded', {
+          count: workspaces.length,
+          scopedIds: scopedWorkspaceIds,
+          activeWorkspaceId,
+          hasTargetInScope: workspaceId ? scopedWorkspaceIds.includes(workspaceId) : null,
+        })
+      }
 
       // Resolve target workspace ID:
       // - If URL specifies one, use it (if valid)
@@ -176,7 +186,9 @@ export function useWorkspaceRouteSync(projectId: string, workspaceId?: string) {
 
       // Step 4: Update URL to include the resolved workspace (replace, not push)
       if (targetWorkspaceId !== workspaceId) {
-        console.log('[syncFromRoute] replacing URL workspace', { from: workspaceId, to: targetWorkspaceId })
+        if (process.env.NODE_ENV !== 'production') {
+          console.log('[syncFromRoute] replacing URL workspace', { from: workspaceId, to: targetWorkspaceId })
+        }
         router.replace(projectWorkspacePath(projectId, targetWorkspaceId))
       }
 
@@ -215,11 +227,13 @@ export function useWorkspaceRouteSync(projectId: string, workspaceId?: string) {
 
       // Step 6: Activate conversation (loads messages, no workspace side-effects)
       const activeConversationId = useConversationStore.getState().activeConversationId
-      console.log('[syncFromRoute] step6 activate conversation', {
-        targetWorkspaceId,
-        activeConversationId,
-        willCall: activeConversationId !== targetWorkspaceId,
-      })
+      if (process.env.NODE_ENV !== 'production') {
+        console.log('[syncFromRoute] step6 activate conversation', {
+          targetWorkspaceId,
+          activeConversationId,
+          willCall: activeConversationId !== targetWorkspaceId,
+        })
+      }
       if (activeConversationId !== targetWorkspaceId &&
           pendingActivation.current?.workspaceId !== targetWorkspaceId) {
         pendingActivation.current = {
@@ -237,7 +251,9 @@ export function useWorkspaceRouteSync(projectId: string, workspaceId?: string) {
       }
       if (cancelled) return
       setInitialSyncComplete(true)
-      console.log('[syncFromRoute] done', { targetWorkspaceId })
+      if (process.env.NODE_ENV !== 'production') {
+        console.log('[syncFromRoute] done', { targetWorkspaceId })
+      }
     }
 
     void syncFromRoute().catch((error: unknown) => {
