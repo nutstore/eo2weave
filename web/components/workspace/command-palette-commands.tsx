@@ -23,6 +23,9 @@ import {
 } from 'lucide-react'
 import type { Command } from './CommandPalette'
 
+// import.meta.env is not available in the Next.js web bundle.
+const DEV = process.env.NODE_ENV !== 'production'
+
 type TranslateFn = (key: string, params?: Record<string, string | number>) => string
 
 // ============================================================================
@@ -228,16 +231,16 @@ export interface CommandHandlers {
 
 export function createDefaultHandlers(overrides: Partial<CommandHandlers> = {}): CommandHandlers {
   const defaultHandlers: CommandHandlers = {
-    onNewConversation: () => console.log('[CommandPalette] New conversation'),
-    onContinueLast: () => console.log('[CommandPalette] Continue last conversation'),
-    onOpenFile: () => console.log('[CommandPalette] Open file dialog'),
-    onToggleSidebar: () => console.log('[CommandPalette] Toggle sidebar'),
-    onToggleTheme: () => console.log('[CommandPalette] Toggle theme'),
-    onOpenSkills: () => console.log('[CommandPalette] Open skills manager'),
-    onOpenTools: () => console.log('[CommandPalette] Open tools panel'),
-    onOpenMCP: () => console.log('[CommandPalette] Open MCP settings'),
-    onOpenSettings: () => console.log('[CommandPalette] Open settings'),
-    onShowShortcuts: () => console.log('[CommandPalette] Show shortcuts'),
+    onNewConversation: () => { if (DEV) console.log('[CommandPalette] New conversation') },
+    onContinueLast: () => { if (DEV) console.log('[CommandPalette] Continue last conversation') },
+    onOpenFile: () => { if (DEV) console.log('[CommandPalette] Open file dialog') },
+    onToggleSidebar: () => { if (DEV) console.log('[CommandPalette] Toggle sidebar') },
+    onToggleTheme: () => { if (DEV) console.log('[CommandPalette] Toggle theme') },
+    onOpenSkills: () => { if (DEV) console.log('[CommandPalette] Open skills manager') },
+    onOpenTools: () => { if (DEV) console.log('[CommandPalette] Open tools panel') },
+    onOpenMCP: () => { if (DEV) console.log('[CommandPalette] Open MCP settings') },
+    onOpenSettings: () => { if (DEV) console.log('[CommandPalette] Open settings') },
+    onShowShortcuts: () => { if (DEV) console.log('[CommandPalette] Show shortcuts') },
   }
 
   return { ...defaultHandlers, ...overrides }
