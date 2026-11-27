@@ -13,12 +13,7 @@ export function cn(...inputs: ClassValue[]) {
  */
 const BYTE_UNITS = ['B', 'KB', 'MB', 'GB', 'TB'] as const
 
-/**
- * Format file size (alias for formatBytes for compatibility)
- */
-export function formatSize(bytes: number): string {
-  return formatBytes(bytes)
-}
+
 
 /**
  * Format bytes to human-readable format.

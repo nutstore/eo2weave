@@ -41,7 +41,7 @@ import {
   type ProjectWithCount,
 } from '@/services/export/conversation-batch-export'
 import type { ConversationExportFormat } from '@/services/export/conversation-export'
-import { formatSize } from '@/lib/utils'
+import { formatBytes } from '@/lib/utils'
 
 // ============================================================================
 // Types & constants
@@ -592,7 +592,7 @@ export function BatchExportDialog({ open, onOpenChange }: BatchExportDialogProps
                 {result.skippedCount > 0 &&
                   ` · ${t('conversation.batchExport.skipped', { count: result.skippedCount })}`}
                 {' · '}
-                {result.filename} ({formatSize(result.size)})
+                {result.filename} ({formatBytes(result.size)})
               </span>
             </div>
           )}

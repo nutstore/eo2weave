@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { formatBytes, formatSize, formatNumber, formatDuration } from './utils'
+import { formatBytes, formatNumber, formatDuration } from './utils'
 
 describe('formatBytes', () => {
   it('should format 0 bytes correctly', () => {
@@ -60,14 +60,6 @@ describe('formatBytes', () => {
   })
 })
 
-describe('formatSize', () => {
-  it('should match formatBytes', () => {
-    expect(formatSize(0)).toBe('0 B')
-    expect(formatSize(1024)).toBe('1.0 KB')
-    expect(formatSize(-1)).toBe('-1 B')
-    expect(formatSize(NaN)).toBe('0 B')
-  })
-})
 
 describe('formatNumber', () => {
   it('should format small numbers without commas', () => {
