@@ -50,7 +50,7 @@ Not a candidate: "unify the size formatters". `formatBytes`/`formatSize` in `web
 - Labels: every beginner task carries `good first issue` **and** `help wanted` (`good first issue` is GitHub's beginner subset of `help wanted`). Larger-scope tasks carry `help wanted` alone — that is what makes the README's second pool a real step up rather than the same list again.
 - Every issue: exact file paths and a verification command, whatever its labels.
 - **Verified counts only.** Before listing a file as an ungated-log candidate, confirm the calls actually execute — `git grep -n "<enclosing symbol>" -- web` for callers — and that no `process.env.NODE_ENV` guard already sits above them. A dead export or an already-guarded call inflates a raw `grep -c` and produces busywork tasks.
-- **Scope acceptance greps to the module under change.** A tree-wide `grep -rn "<name>" web/` also matches deliberately separate local implementations (`formatSize` has three) and the test file; the criterion must name the import path or the exact files.
+- **Scope acceptance greps by identity, not by directory.** A tree-wide `grep -rn "<name>" web/` also matches deliberately separate local implementations (`formatSize` has three) and the test file; name the import path or the exact files instead. Scoping the grep does not shrink the task: the changed module's importers and its own tests stay inside the acceptance criteria, so consumers are still covered.
 - Only tasks doable without deep architecture knowledge: pure functions, i18n extraction, log gating, small UI affordances.
 - When a batch member is claimed (PR opened), refill from the candidate list within the same week.
 - Never include refactors that touch store/persist core — those are maintainer-only.
