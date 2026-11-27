@@ -8,11 +8,19 @@
 
 | Source | Count | Typical issue |
 |---|---|---|
-| `console.log` ungated in production paths | 36 executable calls across 6 files in `web/components` + `web/hooks` | Guard behind `import.meta.env.DEV` / a debug flag |
+| `console.log` ungated in production paths | 25 ungated calls across 4 files in `web/components` + `web/hooks` (split as #374 + #377) | Guard behind `process.env.NODE_ENV !== 'production'` — **not** `import.meta.env.DEV` (see note below) |
 | Hardcoded user-facing strings not in i18n | recurring (past batch #12/#13 pattern) | Extract to locale keys, all four locales |
 | Small UX gaps found during dogfooding | 1-2 per release | e.g. keyboard shortcut missing, focus trap |
 
-Counts exclude `console.log` occurrences that live inside code-viewer sample strings (`web/components/code-viewer/*`) — they never execute. A raw `grep -c` therefore reads higher than the number above.
+Guarding debug logging in `web/`: the app is Next.js 15 (`web/package.json`), so the guard is `process.env.NODE_ENV !== 'production'`. **`import.meta.env.DEV` is Vite-only and does not exist here** — there is zero `import.meta.env` usage in `web/`, so that guard would hit `undefined.DEV` at runtime. Working precedent: `web/components/settings/ProviderManager.tsx:1780`.
+
+Counts exclude, on purpose:
+
+- `web/components/code-viewer/*` — those occurrences are text inside sample-code template strings and never execute.
+- `web/components/settings/ProviderManager.tsx` — its single call is already inside a `process.env.NODE_ENV` guard (L1780).
+- `web/components/workspace/command-palette-commands.tsx` — 10 stubs inside `createDefaultHandlers`, which no module imports (`git grep -n createDefaultHandlers -- web` matches only its own definition), so they never run. Removing the dead export is a separate cleanup, not log gating.
+
+A raw `grep -c "console\.log"` therefore reads higher (36) than the number above.
 
 Not a candidate: "unify the size formatters". `formatBytes`/`formatSize` in `web/lib/utils.ts` already have unit tests (`web/lib/utils.test.ts`, since #119), and the three local variants (`web/storage/diagnostics.ts`, `web/components/sync/FileDiffViewer.tsx`, `web/skills/skill-resources.ts`) are deliberately different — see the #14 note in `skill-resources.ts`.
 
@@ -41,6 +49,8 @@ Not a candidate: "unify the size formatters". `formatBytes`/`formatSize` in `web
 - Batch size: 3-5 open at a time. Never more — an empty backlog reads worse than a full one.
 - Labels: every beginner task carries `good first issue` **and** `help wanted` (`good first issue` is GitHub's beginner subset of `help wanted`). Larger-scope tasks carry `help wanted` alone — that is what makes the README's second pool a real step up rather than the same list again.
 - Every issue: exact file paths and a verification command, whatever its labels.
+- **Verified counts only.** Before listing a file as an ungated-log candidate, confirm the calls actually execute — `git grep -n "<enclosing symbol>" -- web` for callers — and that no `process.env.NODE_ENV` guard already sits above them. A dead export or an already-guarded call inflates a raw `grep -c` and produces busywork tasks.
+- **Scope acceptance greps to the module under change.** A tree-wide `grep -rn "<name>" web/` also matches deliberately separate local implementations (`formatSize` has three) and the test file; the criterion must name the import path or the exact files.
 - Only tasks doable without deep architecture knowledge: pure functions, i18n extraction, log gating, small UI affordances.
 - When a batch member is claimed (PR opened), refill from the candidate list within the same week.
 - Never include refactors that touch store/persist core — those are maintainer-only.
