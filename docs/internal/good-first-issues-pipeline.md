@@ -4,7 +4,7 @@
 > Published in the repository on purpose: the conventions below are process, not
 > secrets. Keep it that way — never add anything here that cannot be public.
 
-## Candidate sources (scanned 2026-11-27, main @ f98327d3)
+## Candidate sources (scanned 2026-11-27 on main @ f98327d3; the log-gating counts re-verified on 3f5ffae3)
 
 | Source | Count | Typical issue |
 |---|---|---|
@@ -20,7 +20,7 @@ Counts exclude, on purpose:
 - `web/components/settings/ProviderManager.tsx` — its single call is already inside a `process.env.NODE_ENV` guard (L1780).
 - `web/components/workspace/command-palette-commands.tsx` — 10 stubs inside `createDefaultHandlers`, which no module imports (`git grep -n createDefaultHandlers -- web` matches only its own definition), so they never run. Removing the dead export is a separate cleanup, not log gating.
 
-A raw count over the TypeScript sources (`grep -rc "console\.log" web/components web/hooks --include='*.ts' --include='*.tsx'`) returns **45**: 25 live ungated calls (the number above), 11 in already-guarded or never-executed code, and 9 code-viewer sample strings. Dropping the `--include` filters adds 6 matches from the `code-viewer/*.md` example docs (51 total), none of which execute.
+A raw count over the TypeScript sources (`grep -ro "console\.log" web/components web/hooks --include='*.ts' --include='*.tsx' | wc -l`) returns **45**: 25 live ungated calls (the number above), 11 in already-guarded or never-executed code, and 9 code-viewer sample strings. Dropping the `--include` filters adds 6 matches from the `code-viewer/*.md` example docs (51 total), none of which execute.
 
 Not a candidate: "unify the size formatters". `formatBytes`/`formatSize` in `web/lib/utils.ts` already have unit tests (`web/lib/utils.test.ts`, since #119), and the three local variants (`web/storage/diagnostics.ts`, `web/components/sync/FileDiffViewer.tsx`, `web/skills/skill-resources.ts`) are deliberately different — see the #14 note in `skill-resources.ts`.
 
