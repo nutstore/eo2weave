@@ -115,7 +115,7 @@ make build
 **第一次参与？** 从 [`good first issue`](https://github.com/nutstore/eo2weave/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) 开始——这些都是小而清晰的任务，附带确切的文件路径和验证步骤，不需要深入了解架构。
 
 - [`good first issue` 任务](https://github.com/nutstore/eo2weave/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) — 新手友好，可直接开工
-- [`help wanted` 任务](https://github.com/nutstore/eo2weave/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22) — 稍大一些的范围
+- [`help wanted` 任务](https://github.com/nutstore/eo2weave/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22) — 所有欢迎外部参与的任务，包含上面的新手任务
 - [Contributing Guide](./CONTRIBUTING.md) — 开发环境、代码约定、PR 流程
 - [Code of Conduct](./CODE_OF_CONDUCT.md)
 - [Security Policy](./SECURITY.md) — 安全漏洞请通过该渠道私下报告

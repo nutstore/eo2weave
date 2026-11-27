@@ -1,16 +1,19 @@
 # Good First Issues — March 2027 batch plan (working notes)
 
 > Working document for maintaining a steady supply of `good first issue` entries.
-> Keep private or move to a private repo if shared; contains internal conventions.
+> Published in the repository on purpose: the conventions below are process, not
+> secrets. Keep it that way — never add anything here that cannot be public.
 
 ## Candidate sources (scanned 2026-11-27, main @ f98327d3)
 
 | Source | Count | Typical issue |
 |---|---|---|
-| `console.log` ungated in production paths | ~45 in `web/components` + `web/hooks` | Guard behind `import.meta.env.DEV` / a debug flag |
-| `formatBytes` used across 31 files with no unit tests on the formatter itself | 1 formatter + 31 call sites | Add unit tests + edge cases (0, negative, PB+) |
+| `console.log` ungated in production paths | 36 executable calls across 6 files in `web/components` + `web/hooks` | Guard behind `import.meta.env.DEV` / a debug flag |
+| Duplicated `formatSize` re-implementations outside the canonical formatter | 3 copies (`web/storage/diagnostics.ts:176`, `web/components/sync/FileDiffViewer.tsx:268`, `web/skills/skill-resources.ts:126`) | Point them at the `@/lib/utils` export |
 | Hardcoded user-facing strings not in i18n | recurring (past batch #12/#13 pattern) | Extract to locale keys, all four locales |
 | Small UX gaps found during dogfooding | 1-2 per release | e.g. keyboard shortcut missing, focus trap |
+
+Counts exclude `console.log` occurrences that live inside code-viewer sample strings (`web/components/code-viewer/*`) — they never execute. A raw `grep -c` therefore reads higher than the number above.
 
 ## Template (match the style of the closed batch #9-#18)
 
@@ -35,7 +38,8 @@
 ## Rules
 
 - Batch size: 3-5 open at a time. Never more — an empty backlog reads worse than a full one.
-- Every issue: `good first issue` + `help wanted` labels, exact file paths, a verification command.
+- Labels: every beginner task carries `good first issue` **and** `help wanted` (`good first issue` is GitHub's beginner subset of `help wanted`). Larger-scope tasks carry `help wanted` alone — that is what makes the README's second pool a real step up rather than the same list again.
+- Every issue: exact file paths and a verification command, whatever its labels.
 - Only tasks doable without deep architecture knowledge: pure functions, i18n extraction, log gating, small UI affordances.
 - When a batch member is claimed (PR opened), refill from the candidate list within the same week.
 - Never include refactors that touch store/persist core — those are maintainer-only.

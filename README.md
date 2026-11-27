@@ -246,7 +246,7 @@ Contributions are welcome — from bug reports to full features.
 **New to the project?** Start with a [`good first issue`](https://github.com/nutstore/eo2weave/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) — these are small, well-scoped tasks with exact file paths and verification steps. No deep architecture knowledge needed.
 
 - [`good first issue` tasks](https://github.com/nutstore/eo2weave/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) — beginner-friendly, ready to work on
-- [`help wanted` tasks](https://github.com/nutstore/eo2weave/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22) — a step up in scope
+- [`help wanted` tasks](https://github.com/nutstore/eo2weave/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22) — everything we'd welcome help on, including the beginner batch above
 - [Contributing Guide](./CONTRIBUTING.md) — dev setup, conventions, PR workflow
 - [Code of Conduct](./CODE_OF_CONDUCT.md)
 - [Security Policy](./SECURITY.md) — please report vulnerabilities privately
