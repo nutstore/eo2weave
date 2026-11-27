@@ -12,7 +12,7 @@
 | Hardcoded user-facing strings not in i18n | recurring (past batch #12/#13 pattern) | Extract to locale keys, all four locales |
 | Small UX gaps found during dogfooding | 1-2 per release | e.g. keyboard shortcut missing, focus trap |
 
-Guarding debug logging in `web/`: the app is Next.js 15 (`web/package.json`), so the guard is `process.env.NODE_ENV !== 'production'`. **`import.meta.env.DEV` is Vite-only and does not exist here** — there is zero `import.meta.env` usage in `web/`, so that guard would hit `undefined.DEV` at runtime. Working precedent: `web/components/settings/ProviderManager.tsx:1780`.
+Guarding debug logging in `web/`: the app is Next.js 15 (`web/package.json`), so the guard is `process.env.NODE_ENV !== 'production'`. **`import.meta.env` is Vite-only and does not exist here** — `web/` uses `import.meta.url` for worker URLs and `import.meta.hot` in the SQLite module, but never `import.meta.env`, so that guard would hit `undefined.DEV` at runtime. Working precedent: `web/components/settings/ProviderManager.tsx:1780`.
 
 Counts exclude, on purpose:
 
@@ -20,7 +20,7 @@ Counts exclude, on purpose:
 - `web/components/settings/ProviderManager.tsx` — its single call is already inside a `process.env.NODE_ENV` guard (L1780).
 - `web/components/workspace/command-palette-commands.tsx` — 10 stubs inside `createDefaultHandlers`, which no module imports (`git grep -n createDefaultHandlers -- web` matches only its own definition), so they never run. Removing the dead export is a separate cleanup, not log gating.
 
-A raw `grep -c "console\.log"` therefore reads higher (36) than the number above.
+A raw `grep -c "console\.log"` over `web/components` + `web/hooks` returns **45** lines: 25 live ungated calls (the number above), 11 in already-guarded or never-executed code, and 9 code-viewer sample strings.
 
 Not a candidate: "unify the size formatters". `formatBytes`/`formatSize` in `web/lib/utils.ts` already have unit tests (`web/lib/utils.test.ts`, since #119), and the three local variants (`web/storage/diagnostics.ts`, `web/components/sync/FileDiffViewer.tsx`, `web/skills/skill-resources.ts`) are deliberately different — see the #14 note in `skill-resources.ts`.
 
