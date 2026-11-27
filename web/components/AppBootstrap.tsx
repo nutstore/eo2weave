@@ -32,6 +32,9 @@ import { useGatewayReloginStore } from '@/store/gateway-relogin.store'
 import { ServiceWorkerBridge } from '@/components/ServiceWorkerBridge'
 import { PwaInstallCard } from '@/components/pwa/PwaInstallCard'
 
+// import.meta.env is not available in the Next.js web bundle.
+const DEV = process.env.NODE_ENV !== 'production'
+
 /**
  * AppBootstrap — storage-initialization gate + global chrome.
  *
@@ -124,7 +127,7 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
     timeoutMs = 15000
   ): Promise<T> => {
     const started = performance.now()
-    console.log(`[App Init] ▶ ${label} start`)
+    if (DEV) console.log(`[App Init] ▶ ${label} start`)
     const timeoutId = window.setTimeout(() => {
       const elapsed = Math.round(performance.now() - started)
       console.warn(`[App Init] ⏳ ${label} still running after ${elapsed}ms`)
@@ -132,7 +135,7 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
     try {
       const result = await fn()
       const elapsed = Math.round(performance.now() - started)
-      console.log(`[App Init] ✅ ${label} done (${elapsed}ms)`)
+      if (DEV) console.log(`[App Init] ✅ ${label} done (${elapsed}ms)`)
       return result
     } catch (error) {
       const elapsed = Math.round(performance.now() - started)
@@ -201,7 +204,7 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
         const result = await initStorage({
           allowFallback: false,
           onProgress: (progress) => {
-            console.log('[Storage]', progress.step, progress.details)
+            if (DEV) console.log('[Storage]', progress.step, progress.details)
 
             switch (progress.step) {
               case 'init':
@@ -493,7 +496,7 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
       }
 
       if (mounted) {
-        console.log('[App Init] ✅ setting isStorageReady=true')
+        if (DEV) console.log('[App Init] ✅ setting isStorageReady=true')
         initCompleteRef.current = true
         setIsStorageReady(true)
       }
@@ -543,10 +546,10 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
 
   // Request persistent storage and restore directory handle on first user interaction
   useEffect(() => {
-    console.log('[Storage] Setting up persistent storage listener...')
+    if (DEV) console.log('[Storage] Setting up persistent storage listener...')
 
     const handleFirstInteraction = async (_e: Event) => {
-      console.log('[Storage] User interaction detected, requesting persistent storage...')
+      if (DEV) console.log('[Storage] User interaction detected, requesting persistent storage...')
       let persisted = false
 
       try {
@@ -557,7 +560,7 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
         console.error('[Storage] Error requesting persistent storage:', err)
       }
 
-      console.log('[Storage] Persistent storage result:', persisted ? 'GRANTED ✅' : 'DENIED ❌')
+      if (DEV) console.log('[Storage] Persistent storage result:', persisted ? 'GRANTED ✅' : 'DENIED ❌')
 
       try {
         const { useFolderAccessStore } = await import('@/store/folder-access.store')
@@ -575,12 +578,12 @@ export function AppBootstrap({ children }: { children?: React.ReactNode }) {
               (root.backend ?? 'fsaccess') === 'fsaccess' && root.status === 'needs_user_activation'
           )
           if (bannerOwnsIt) {
-            console.log('[Storage] Folder needs activation — leaving it to the re-authorization banner')
+            if (DEV) console.log('[Storage] Folder needs activation — leaving it to the re-authorization banner')
             return
           }
-          console.log('[Storage] Folder needs activation, requesting permission...')
+          if (DEV) console.log('[Storage] Folder needs activation, requesting permission...')
           const granted = await folderState.requestPermission(folderRecord.projectId)
-          console.log('[Storage] Handle permission result:', granted ? 'GRANTED ✅' : 'DENIED ❌')
+          if (DEV) console.log('[Storage] Handle permission result:', granted ? 'GRANTED ✅' : 'DENIED ❌')
 
           if (granted) {
             const { useAgentStore } = await import('@/store/agent.store')
