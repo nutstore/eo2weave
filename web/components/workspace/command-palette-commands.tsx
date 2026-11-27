@@ -23,8 +23,6 @@ import {
 } from 'lucide-react'
 import type { Command } from './CommandPalette'
 
-// import.meta.env is not available in the Next.js web bundle.
-const DEV = process.env.NODE_ENV !== 'production'
 
 type TranslateFn = (key: string, params?: Record<string, string | number>) => string
 
@@ -223,25 +221,4 @@ export interface CommandHandlers {
   // Settings & Help
   onOpenSettings: () => void
   onShowShortcuts: () => void
-}
-
-// ============================================================================
-// Default Handlers (stub implementations)
-// ============================================================================
-
-export function createDefaultHandlers(overrides: Partial<CommandHandlers> = {}): CommandHandlers {
-  const defaultHandlers: CommandHandlers = {
-    onNewConversation: () => { if (DEV) console.log('[CommandPalette] New conversation') },
-    onContinueLast: () => { if (DEV) console.log('[CommandPalette] Continue last conversation') },
-    onOpenFile: () => { if (DEV) console.log('[CommandPalette] Open file dialog') },
-    onToggleSidebar: () => { if (DEV) console.log('[CommandPalette] Toggle sidebar') },
-    onToggleTheme: () => { if (DEV) console.log('[CommandPalette] Toggle theme') },
-    onOpenSkills: () => { if (DEV) console.log('[CommandPalette] Open skills manager') },
-    onOpenTools: () => { if (DEV) console.log('[CommandPalette] Open tools panel') },
-    onOpenMCP: () => { if (DEV) console.log('[CommandPalette] Open MCP settings') },
-    onOpenSettings: () => { if (DEV) console.log('[CommandPalette] Open settings') },
-    onShowShortcuts: () => { if (DEV) console.log('[CommandPalette] Show shortcuts') },
-  }
-
-  return { ...defaultHandlers, ...overrides }
 }
