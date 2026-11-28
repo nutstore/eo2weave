@@ -18,7 +18,7 @@ Counts exclude, on purpose:
 
 - `web/components/code-viewer/*` — those occurrences are text inside sample-code template strings and never execute.
 - `web/components/settings/ProviderManager.tsx` — its single call is already inside a `process.env.NODE_ENV` guard (L1780).
-- `web/components/workspace/command-palette-commands.tsx` — 10 stubs inside `createDefaultHandlers`, which no module imports (`git grep -n createDefaultHandlers -- web` matches only its own definition), so they never run. Removing the dead export is a separate cleanup, not log gating.
+- `web/components/workspace/command-palette-commands.tsx` — 10 stubs that lived inside the dead `createDefaultHandlers` export, which no module imported; the export was removed by #382, so they never ran. Not log gating.
 
 A raw count over the TypeScript sources (`grep -ro "console\.log" web/components web/hooks --include='*.ts' --include='*.tsx' | wc -l`) returns **45**: 25 live ungated calls (the number above), 11 in already-guarded or never-executed code, and 9 code-viewer sample strings. Dropping the `--include` filters adds 6 matches from the `code-viewer/*.md` example docs (51 total), none of which execute.
 
